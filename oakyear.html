@@ -1,0 +1,1822 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Oak Year — a seasonal field guide to the oak</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Literata:ital,opsz,wght@0,7..72,300..600;1,7..72,400&family=Schibsted+Grotesk:wght@400;500;600&display=swap" rel="stylesheet">
+<!--
+================================================================================
+ OAK YEAR — ARCHITECTURE NOTES
+================================================================================
+ Everything lives in this one file, but it is organised as independent layers
+ so each can grow (or be moved to its own file) without touching the others.
+
+ 1. DATA (JSON blocks in <script type="application/json">)
+    #oak-content   topics → seasons → levels → text. Swap for a fetched JSON
+                   file later; the schema is the contract.
+    #oak-glossary  term → definition + match forms. Terms are auto-linked.
+    #oak-months    one short phenology note per month.
+
+ 2. CONFIG          LEVELS, SEASONS, PHENOLOGY keyframes (12 months per channel).
+                   Add a level: append to LEVELS and add its text in content.
+                   Missing text falls back to the nearest lower level.
+                   Add a phenology channel: add 12 values, read it in Scene.
+
+ 3. STORE           Single source of truth {month, level, topic, playing}.
+                   Modules subscribe; nothing talks to the DOM of another module.
+
+ 4. SCENE           Procedural, seeded tree (deterministic). Pure render of
+                   phenology → SVG attributes. Swap renderer (canvas/WebGL)
+                   without touching content.
+
+ 5. TOPICS          App.registerTopic({id, focus, illustrate}). A topic is a
+                   zoom target + an illustration function + content key.
+                   Illustrations are pure functions ctx → SVG string;
+                   ctx.mark() adds a numbered, level-aware legend entry.
+
+ 6. UI              Panel, timeline, level switch, glossary tooltips.
+
+ Ideas this structure is ready for: more topics (galls, insects, lichens),
+ deeper zoom layers per topic, quiz mode per level, other species packs,
+ translations (STRINGS + content per locale), deep links.
+================================================================================
+-->
+<style>
+:root{
+  --bg:#E6EBE2; --surface:#F2F4EE; --surface-2:#DCE3D5; --ink:#1D241A; --muted:#5C6656;
+  --line:#C6CEBD; --line-strong:#97A28C;
+  --trunk:#4B3C2F; --root:#6E5644; --soil-top:#CBBDA2; --soil-bot:#A28F72; --hypha:#FBF8EF;
+  --accent:#4F7A3A;
+  --serif:"Literata", "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  --sans:"Schibsted Grotesk", "Avenir Next", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --panel-w:440px;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#11150F; --surface:#171C14; --surface-2:#20281C; --ink:#E1E6D8; --muted:#97A18C;
+    --line:#2A3325; --line-strong:#46523E;
+    --trunk:#86705C; --root:#7E6855; --soil-top:#2B251D; --soil-bot:#1A1612; --hypha:#D8D1BE;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#11150F; --surface:#171C14; --surface-2:#20281C; --ink:#E1E6D8; --muted:#97A18C;
+  --line:#2A3325; --line-strong:#46523E;
+  --trunk:#86705C; --root:#7E6855; --soil-top:#2B251D; --soil-bot:#1A1612; --hypha:#D8D1BE;
+  color-scheme: dark;
+}
+:root{ box-sizing:border-box; padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px); }
+*,*::before,*::after{ box-sizing:inherit; }
+html{ height:100%; scroll-padding-top:env(safe-area-inset-top,0px); }
+body{
+  height:100%; margin:0; background:var(--bg); color:var(--ink);
+  font-family:var(--sans); font-size:15px; line-height:1.45;
+  display:grid; grid-template-rows:auto 1fr; -webkit-font-smoothing:antialiased;
+}
+button{ font:inherit; color:inherit; }
+:focus-visible{ outline:2px solid var(--ink); outline-offset:2px; border-radius:4px; }
+
+/* ---------- Header ---------- */
+.top{
+  display:flex; align-items:center; justify-content:space-between; gap:16px;
+  padding:14px 24px; border-bottom:1px solid var(--line);
+}
+.brand{ display:flex; align-items:center; gap:12px; min-width:0; }
+.brand svg{ flex:none; }
+.brand-title{ font-family:var(--serif); font-size:21px; font-weight:500; letter-spacing:-0.01em; margin:0; line-height:1.1; }
+.brand-sub{ margin:2px 0 0; color:var(--muted); font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.brand-sub i{ font-family:var(--serif); }
+
+.levels{ display:flex; align-items:center; gap:10px; }
+.levels-label{ color:var(--muted); font-size:13px; }
+.seg{ display:flex; background:var(--surface-2); border-radius:999px; padding:3px; }
+.seg button{
+  border:0; background:transparent; padding:6px 13px; border-radius:999px; cursor:pointer;
+  font-size:13px; font-weight:500; color:var(--muted); white-space:nowrap;
+  transition:background .2s, color .2s;
+}
+.seg button[aria-checked="true"]{ background:var(--surface); color:var(--ink); box-shadow:0 0 0 1px var(--line); }
+.seg .short{ display:none; }
+
+/* ---------- Main layout ---------- */
+.main{ display:grid; grid-template-columns:minmax(0,1fr) var(--panel-w); min-height:0; }
+.stage{ position:relative; display:flex; flex-direction:column; min-height:0; min-width:0; overflow:hidden; }
+.scene-wrap{ position:relative; flex:1; min-height:0; }
+#scene{ position:absolute; inset:0; width:100%; height:100%; display:block; touch-action:manipulation; }
+
+.moment{ position:absolute; left:28px; top:22px; max-width:min(330px, 60%); pointer-events:none; z-index:2; transition:opacity .35s; }
+.moment.off{ opacity:0; }
+.moment-month{
+  font-family:var(--serif); font-weight:300; font-size:clamp(44px, 6vw, 76px); line-height:.95;
+  letter-spacing:-0.03em; margin:0; font-variation-settings:"opsz" 72;
+}
+.moment-season{ margin:10px 0 4px; font-size:13px; font-weight:600; color:var(--ink); display:flex; align-items:center; gap:8px; }
+.moment-season::before{ content:""; width:9px; height:9px; border-radius:50%; background:var(--accent); transition:background .4s; }
+.moment-note{ margin:0; color:var(--muted); font-size:14px; line-height:1.45; }
+
+.back{
+  position:absolute; right:18px; top:18px; z-index:3;
+  border:1px solid var(--line); background:var(--surface); border-radius:999px;
+  padding:7px 14px 7px 11px; font-size:13px; font-weight:500; cursor:pointer;
+  display:flex; align-items:center; gap:6px;
+  opacity:0; transform:translateY(-4px); pointer-events:none; transition:opacity .25s, transform .25s;
+}
+.back.on{ opacity:1; transform:none; pointer-events:auto; }
+
+/* Hotspots (HTML overlay so labels stay readable at any zoom) */
+.hotspots{ position:absolute; inset:0; pointer-events:none; z-index:2; transition:opacity .3s; }
+.hotspots.off{ opacity:0; }
+.hotspots.off .hs{ pointer-events:none; }
+.hs{
+  position:absolute; left:0; top:0; pointer-events:auto; cursor:pointer;
+  display:flex; align-items:center; gap:7px; border:0; background:none; padding:0;
+  transform:translate(-11px,-11px);
+}
+.hs-dot{
+  width:22px; height:22px; border-radius:50%; position:relative; flex:none;
+  background:var(--surface); box-shadow:0 0 0 1.5px var(--ink) inset;
+}
+.hs-dot::after{ content:""; position:absolute; inset:6px; border-radius:50%; background:var(--ink); transition:inset .2s; }
+.hs:hover .hs-dot::after, .hs:focus-visible .hs-dot::after{ inset:4px; }
+.hs-label{
+  font-size:12.5px; font-weight:500; background:var(--surface); padding:3px 9px; border-radius:6px;
+  box-shadow:0 0 0 1px var(--line); white-space:nowrap;
+}
+.hs-label.left{ order:-1; }
+.hs.flip{ flex-direction:row-reverse; transform:translate(calc(-100% + 11px),-11px); }
+
+/* ---------- Timeline ---------- */
+.timeline{
+  display:grid; grid-template-columns:auto 1fr; gap:4px 16px; align-items:center;
+  padding:12px 28px 18px; border-top:1px solid var(--line);
+}
+.play{
+  grid-row:span 2; width:40px; height:40px; border-radius:50%; border:1px solid var(--line-strong);
+  background:var(--surface); cursor:pointer; display:grid; place-items:center;
+}
+.play svg{ width:14px; height:14px; fill:var(--ink); }
+.range{ position:relative; height:26px; display:flex; align-items:center; }
+.range input{ width:100%; margin:0; appearance:none; -webkit-appearance:none; background:transparent; height:26px; cursor:pointer; }
+.range input::-webkit-slider-runnable-track{ height:4px; border-radius:2px; background:var(--line); }
+.range input::-moz-range-track{ height:4px; border-radius:2px; background:var(--line); }
+.range input::-webkit-slider-thumb{
+  -webkit-appearance:none; width:20px; height:20px; border-radius:50%; margin-top:-8px;
+  background:var(--accent); border:3px solid var(--surface); box-shadow:0 0 0 1px var(--line-strong);
+}
+.range input::-moz-range-thumb{
+  width:14px; height:14px; border-radius:50%; background:var(--accent); border:3px solid var(--surface); box-shadow:0 0 0 1px var(--line-strong);
+}
+.months{ display:grid; grid-template-columns:repeat(12,1fr); }
+.months button{
+  border:0; background:none; padding:2px 0; cursor:pointer; color:var(--muted);
+  font-size:12px; text-align:center; border-radius:4px;
+}
+.months button[aria-current="true"]{ color:var(--ink); font-weight:600; }
+
+/* ---------- Panel ---------- */
+.panel{ border-left:1px solid var(--line); background:var(--surface); overflow-y:auto; min-height:0; }
+.panel-inner{ padding:26px 28px 40px; }
+.panel-inner.enter{ animation:enter .35s ease both; }
+@keyframes enter{ from{ opacity:0; transform:translateY(6px);} to{ opacity:1; transform:none; } }
+
+.crumb{ display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:14px; }
+.link{
+  border:0; background:none; padding:4px 0; cursor:pointer; color:var(--muted); font-size:13px; font-weight:500;
+  display:inline-flex; align-items:center; gap:5px;
+}
+.link:hover{ color:var(--ink); }
+.when{ color:var(--muted); font-size:13px; }
+
+.panel h2{
+  font-family:var(--serif); font-weight:400; font-size:34px; line-height:1.05; letter-spacing:-0.02em;
+  margin:0 0 6px; font-variation-settings:"opsz" 48;
+}
+.lede{ margin:0 0 18px; color:var(--muted); font-size:14px; }
+
+figure.ill{ margin:0 0 6px; background:var(--bg); border-radius:14px; padding:10px 8px 6px; }
+figure.ill svg{ display:block; width:100%; height:auto; }
+.legend{ list-style:none; margin:8px 2px 0; padding:0; display:flex; flex-wrap:wrap; gap:4px 14px; font-size:12.5px; color:var(--muted); counter-reset:lg; }
+.legend li{ counter-increment:lg; display:flex; gap:6px; align-items:baseline; }
+.legend li::before{
+  content:counter(lg); flex:none; width:16px; height:16px; border-radius:50%; background:var(--ink); color:var(--surface);
+  font-size:10px; font-weight:600; display:inline-grid; place-items:center; transform:translateY(2px);
+}
+
+.follow{ margin:20px 0 4px; }
+.follow-label{ font-size:13px; color:var(--muted); margin:0 0 8px; }
+.tabs{ display:grid; grid-template-columns:repeat(4,1fr); gap:4px; background:var(--surface-2); border-radius:10px; padding:3px; }
+.tabs button{ border:0; background:none; border-radius:8px; padding:7px 0; font-size:13px; font-weight:500; color:var(--muted); cursor:pointer; }
+.tabs button[aria-pressed="true"]{ background:var(--surface); color:var(--ink); box-shadow:0 0 0 1px var(--line); }
+
+.reading{ margin-top:22px; }
+.reading-level{ font-size:13px; font-weight:600; margin:0 0 6px; display:flex; align-items:center; gap:8px; }
+.pips{ display:inline-flex; gap:3px; }
+.pips i{ width:14px; height:4px; border-radius:2px; background:var(--line); }
+.pips i.on{ background:var(--ink); }
+.reading p.text{
+  font-family:var(--serif); font-size:16.5px; line-height:1.68; margin:0; max-width:62ch;
+  font-variation-settings:"opsz" 16;
+}
+.depth{ display:flex; gap:8px; flex-wrap:wrap; margin-top:16px; }
+.chip{
+  border:1px solid var(--line-strong); background:transparent; border-radius:999px; padding:6px 13px;
+  font-size:13px; font-weight:500; cursor:pointer;
+}
+.chip:hover{ background:var(--surface-2); }
+.chip.primary{ background:var(--ink); color:var(--surface); border-color:var(--ink); }
+.chip.primary:hover{ opacity:.88; background:var(--ink); }
+
+.related{ margin-top:26px; padding-top:18px; border-top:1px solid var(--line); }
+.related p{ margin:0 0 8px; font-size:13px; color:var(--muted); }
+
+.term{
+  border:0; background:none; padding:0; font:inherit; color:inherit; cursor:help;
+  text-decoration:underline; text-decoration-style:dotted; text-decoration-color:var(--line-strong);
+  text-underline-offset:3px; text-decoration-thickness:1.5px;
+}
+.term:hover{ text-decoration-color:var(--ink); }
+#tip{
+  position:fixed; z-index:20; max-width:280px; background:var(--ink); color:var(--surface);
+  padding:10px 12px; border-radius:10px; font-size:13px; line-height:1.45; pointer-events:none;
+  opacity:0; transform:translateY(4px); transition:opacity .15s, transform .15s;
+}
+#tip.on{ opacity:1; transform:none; }
+#tip b{ display:block; font-family:var(--serif); font-weight:500; font-size:15px; margin-bottom:2px; }
+
+/* Intro view */
+.intro h2{ font-size:30px; }
+.intro .lede{ font-family:var(--serif); font-size:16px; line-height:1.6; color:var(--ink); }
+.topic-list{ list-style:none; margin:22px 0 0; padding:0; border-top:1px solid var(--line); }
+.topic-list button{
+  width:100%; text-align:left; border:0; border-bottom:1px solid var(--line); background:none; cursor:pointer;
+  display:grid; grid-template-columns:auto 1fr auto; gap:2px 14px; align-items:center; padding:13px 2px;
+}
+.topic-list button:hover .tl-name{ text-decoration:underline; text-underline-offset:3px; }
+.tl-glyph{ grid-row:span 2; width:34px; height:34px; border-radius:50%; background:var(--surface-2); display:grid; place-items:center; }
+.tl-glyph svg{ width:20px; height:20px; }
+.tl-name{ font-weight:600; font-size:14.5px; }
+.tl-blurb{ grid-column:2; color:var(--muted); font-size:13px; }
+.tl-arrow{ grid-row:span 2; grid-column:3; color:var(--muted); }
+.hint{ margin-top:18px; font-size:13px; color:var(--muted); }
+
+/* Illustration styling */
+.ill .mag-bg{ fill:var(--surface); }
+.ill .mag-ring{ fill:none; stroke:var(--ink); stroke-width:1.5; }
+.ill .loupe{ fill:none; stroke:var(--ink); stroke-width:1; stroke-dasharray:3 3; opacity:.6; }
+.ill .mk circle{ fill:var(--ink); stroke:var(--bg); stroke-width:2; }
+.ill .mk text{ fill:var(--bg); font:600 9.5px var(--sans); text-anchor:middle; }
+.ill .twig{ stroke:var(--trunk); fill:none; stroke-linecap:round; }
+
+/* ---------- Scene styling ---------- */
+.br{ stroke:var(--trunk); fill:none; stroke-linecap:round; }
+.flare{ fill:var(--trunk); }
+.rt{ stroke:var(--root); fill:none; stroke-linecap:round; }
+.hy{ stroke:var(--hypha); fill:none; stroke-width:.8; }
+.focus-ring{ fill:none; stroke:var(--ink); stroke-width:1.6; stroke-dasharray:4 4; opacity:0; transition:opacity .4s .5s; vector-effect:non-scaling-stroke; }
+.focus-ring.on{ opacity:.75; }
+
+/* ---------- Responsive ---------- */
+@media (max-width: 1100px){ :root{ --panel-w:380px; } .levels-label{ display:none; } }
+@media (max-width: 860px){
+  body{ height:auto; display:block; }
+  .main{ display:block; }
+  .stage{ height:70svh; min-height:440px; }
+  .panel{ border-left:0; border-top:1px solid var(--line); overflow:visible; }
+  .panel-inner{ padding:24px 20px 48px; }
+  .top{ padding:12px 16px; flex-wrap:wrap; }
+  .brand-sub{ display:none; }
+  .seg .long{ display:none; } .seg .short{ display:inline; }
+  .seg button{ padding:6px 11px; }
+  .moment{ left:18px; top:14px; }
+  .moment-note{ font-size:13px; }
+  .timeline{ padding:10px 16px 14px; gap:2px 12px; }
+  .hs-label{ font-size:12px; }
+}
+@media (max-width: 420px){ .moment-note{ display:none; } }
+@media (prefers-reduced-motion: reduce){
+  *{ animation:none !important; transition:none !important; }
+}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="brand">
+    <svg width="34" height="34" viewBox="0 0 34 34" aria-hidden="true"><path id="brandLeaf" fill="var(--accent)"/></svg>
+    <div>
+      <h1 class="brand-title">Oak Year</h1>
+      <p class="brand-sub">A seasonal field guide to the pedunculate oak, <i>Quercus robur</i></p>
+    </div>
+  </div>
+  <div class="levels">
+    <span class="levels-label" id="levelsLabel">Reading level</span>
+    <div class="seg" role="radiogroup" aria-labelledby="levelsLabel" id="levelSeg"></div>
+  </div>
+</header>
+
+<div class="main">
+  <section class="stage" aria-label="Oak tree through the year">
+    <div class="scene-wrap" id="sceneWrap">
+      <svg id="scene" viewBox="0 0 1200 900" preserveAspectRatio="xMidYMid meet" role="img" aria-label="An oak tree shown in the selected month"></svg>
+      <div class="moment" aria-live="polite">
+        <p class="moment-month" id="mMonth">May</p>
+        <p class="moment-season" id="mSeason">Spring</p>
+        <p class="moment-note" id="mNote"></p>
+      </div>
+      <div class="hotspots" id="hotspots"></div>
+      <button class="back" id="backBtn" type="button">
+        <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M9 2 4 7l5 5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        Whole tree
+      </button>
+    </div>
+    <div class="timeline">
+      <button class="play" id="playBtn" type="button" aria-label="Play the year"></button>
+      <div class="range"><input id="monthRange" type="range" min="0" max="11.99" step="0.01" aria-label="Time of year"></div>
+      <div class="months" id="monthBtns"></div>
+    </div>
+  </section>
+
+  <aside class="panel" id="panel" aria-live="polite">
+    <div class="panel-inner" id="panelInner"></div>
+  </aside>
+</div>
+<div id="tip" role="tooltip"></div>
+
+<!-- ======================= DATA: CONTENT ======================= -->
+<script type="application/json" id="oak-content">
+{
+  "species": { "common": "Pedunculate oak", "latin": "Quercus robur" },
+  "topics": {
+    "leaves": {
+      "name": "Leaves",
+      "blurb": "Solar panels that change with the seasons",
+      "related": ["buds", "wood", "roots"],
+      "seasons": {
+        "spring": {
+          "ms": "In late April and May the oak’s buds burst open and soft little leaves unfold. They often look reddish or pale at first, because they haven’t finished building their green color. Within a few weeks they toughen up and turn deep green, ready to make food from sunlight.",
+          "hs": "New leaves grow quickly after budburst, mostly by their cells expanding. The reddish tint comes from anthocyanin pigments, which act like sunscreen while chlorophyll and the rest of the light-harvesting machinery are still being built. Young leaves are soft and protein-rich, which is why winter moth caterpillars time their hatching to oak budburst.",
+          "college": "Leaf expansion draws on carbohydrate and nitrogen reserves stored over winter, so young leaves are sinks before they become sources of photosynthate. Anthocyanins in juvenile leaves likely provide photoprotection while chloroplasts are immature. Young oak leaves are low in tannins and high in nitrogen; tannin content and toughness then rise through the season, making leaves less palatable to herbivores, a classic result from Paul Feeny’s work on Quercus robur.",
+          "phd": "Leaf-out integrates chilling and forcing; Q. robur responds strongly to spring forcing temperature and comparatively weakly to photoperiod, so its phenology has advanced markedly under warming. The sink-to-source transition coincides with completion of chloroplast biogenesis and vein-network maturation. Feeny (1970) showed that the seasonal rise in condensed tannins and toughness, with falling leaf N, confines Operophtera brumata to a narrow phenological window, now a model system for climate-driven trophic mismatch."
+        },
+        "summer": {
+          "ms": "In summer the leaves work like solar panels. They take in carbon dioxide from the air through tiny pores, get water from the roots, and use sunlight to turn them into sugar. Oxygen is released as a bonus: a big oak gives off a lot of it on a sunny day.",
+          "hs": "Photosynthesis happens in chloroplasts, mostly in the tightly packed palisade cells just under the upper surface. CO₂ enters through stomata on the underside of the leaf, and guard cells close them during drought to save water. Leaves on the sunny outside of the crown are smaller and thicker (sun leaves) than the broad, thin shade leaves inside.",
+          "college": "Oak is a C3 plant: Rubisco fixes CO₂ in the Calvin cycle, and photorespiration increases on hot days as O₂ competes for the enzyme’s active site. Stomatal conductance trades carbon gain against water loss and responds strongly to vapour-pressure deficit. Many oaks put out a second flush of shoots in midsummer, called Lammas growth, which can replace leaves lost to caterpillars.",
+          "phd": "Compared with beech, Q. robur tends toward a more anisohydric strategy, keeping stomata open to lower leaf water potentials, supported by deep rooting. Oaks are among the strongest isoprene emitters in temperate forests: isoprene, made via the plastidic MEP pathway from recent photosynthate, is thought to stabilise thylakoid membranes and quench reactive oxygen species under heat stress, while feeding tropospheric ozone and secondary organic aerosol formation."
+        },
+        "autumn": {
+          "ms": "As days get shorter and nights colder, the oak takes back useful nutrients from its leaves before dropping them. The green fades and yellows and browns show through. Oak leaves often turn a warm brown and fall later than those of many other trees.",
+          "hs": "The tree breaks down chlorophyll so it can recover the nitrogen inside it. As the green disappears, yellow carotenoids that were there all along become visible, and oxidised tannins give oak its typical brown. A special layer of cells at the base of the leaf stalk, the abscission zone, weakens until the leaf falls.",
+          "college": "Senescence is a regulated, programmed process: chloroplasts are dismantled first, and roughly half of the leaf’s nitrogen and phosphorus is resorbed into twigs and stems for reuse. Chlorophyll is degraded via the PAO pathway into colourless catabolites. Abscission requires cell-wall-degrading enzymes in the separation layer, triggered as auxin flow from the leaf falls and sensitivity to ethylene rises.",
+          "phd": "Senescence timing integrates photoperiod and temperature, but also sink limitation: higher growing-season productivity can advance autumn senescence (Zani et al. 2020, Science), complicating simple predictions that warming delays leaf fall. Chlorophyll catabolism proceeds via pheophorbide a oxygenase (PAO) to nonfluorescent catabolites stored in the vacuole. In juvenile oaks the abscission layer often fails to complete, producing marcescence."
+        },
+        "winter": {
+          "ms": "In winter the oak has no green leaves, so it rests. Young oaks sometimes keep their dry brown leaves until spring, and you can hear them rustle in the wind. The leaves that fell are being eaten by worms, fungi and bacteria, which return their nutrients to the soil.",
+          "hs": "Without leaves the tree can’t photosynthesise, so it lives on starch stored in its wood and roots. Dropping leaves avoids losing water and suffering frost damage while the ground is frozen. Holding on to dead leaves, common on young oaks, is called marcescence; one idea is that it protects buds from deer.",
+          "college": "Oak litter decomposes relatively slowly because of its high lignin and tannin content; tannins bind proteins and can slow nitrogen mineralisation. Marcescence is common in juvenile oaks and beech. Hypotheses include deterring browsing mammals and delaying litter release until spring, when roots are ready to capture the nutrients.",
+          "phd": "Litter quality (lignin:N, condensed tannins) shapes decomposer communities and forest-floor nutrient dynamics; tannin–protein complexes may favour ectomycorrhizal fungi with proteolytic capacity over direct root uptake, a core idea of the mycorrhizal-associated nutrient economy framework (Phillips et al. 2013). Marcescence reflects incomplete abscission-zone development and is ontogenetically regulated, declining as trees mature."
+        }
+      }
+    },
+    "buds": {
+      "name": "Buds",
+      "blurb": "Next year’s shoots, packed and waiting",
+      "related": ["leaves", "flowers"],
+      "seasons": {
+        "spring": {
+          "ms": "Oak buds sit in clusters at the tip of each twig. In spring, warm days wake them up. The brown scales peel back and the new shoot, already folded up inside with its leaves and flowers, pushes out.",
+          "hs": "Budburst is triggered when the tree has had enough cold in winter (chilling) followed by enough warmth in spring (forcing). The shoot inside each bud was made the year before; its leaves just need to expand. That’s why an oak can leaf out so quickly.",
+          "college": "Oak shoot growth is largely preformed: leaf primordia initiated in the bud during the previous season expand in spring, giving determinate, episodic growth. Budburst is commonly modelled with thermal time, the sum of growing-degree-days above a base temperature once chilling has been satisfied. The clustered terminal buds produce the oak’s characteristic zig-zag branching.",
+          "phd": "Phenological models (sequential, parallel, UniChill) combine chilling and forcing; for Q. robur forcing dominates, and insufficient chilling raises the forcing requirement. Release from dormancy involves restoring symplastic connectivity by callose degradation at plasmodesmata, gibberellin signalling and reactivation of meristematic cell cycles. Oaks show endogenous rhythmic growth, with shoot flushes alternating with rest phases and root flushes."
+        },
+        "summer": {
+          "ms": "Even in summer the oak is planning ahead. At the tip of each new shoot, next year’s buds are already forming. They are small and greenish-brown now, and slowly fill up with tiny folded leaves.",
+          "hs": "When the shoot stops growing, new buds form at its tip and in the angle where each leaf joins the stem (the axil). Inside, cells at the growing point make the leaves for next spring. Sometimes oaks break a few of these buds early in midsummer, producing a Lammas shoot.",
+          "college": "Bud set follows the end of the spring flush: the apical meristem initiates bud scales and then the leaf primordia for next year. How many primordia form depends on current-year conditions, so this summer’s weather partly sets next year’s leaf area. Lammas shoots arise when some of these buds break precociously.",
+          "phd": "Q. robur’s rhythmic growth yields successive flushes, several per season in seedlings, with alternating shoot and root growth phases; experimental work on clonal oak microcuttings links rest phases to shifts in carbon allocation and gene expression. Organogenesis within the bud, from scale to leaf primordia, reflects a heteroblastic switch governed by plastochron timing."
+        },
+        "autumn": {
+          "ms": "In autumn the buds are finished and wrapped tightly in tough scales, like a sleeping bag. They are ready to survive the cold.",
+          "hs": "Shorter days tell the tree to stop growing and prepare its buds for winter. The buds become dormant: even if a warm day comes, they won’t open. This stops them from bursting during a mild spell in November.",
+          "college": "Dormancy induction is cued by shortening photoperiod and cooling. Buds move from paradormancy (growth held back by other organs) to endodormancy, where the block is internal and only prolonged chilling releases it. Tissues dehydrate and accumulate sugars and dehydrins, raising their freezing tolerance.",
+          "phd": "Endodormancy involves ABA-mediated growth arrest and callose deposition at plasmodesmata, which symplastically isolates the meristem; DAM/SVP-like MADS-box genes are implicated across several woody species. Cold acclimation raises soluble sugars, dehydrins and membrane lipid unsaturation, protecting membranes during freeze-induced dehydration."
+        },
+        "winter": {
+          "ms": "Winter buds look dead, but they’re alive and waiting. Each one holds a tiny shoot with leaves, and some hold flowers too. The brown scales overlap like roof tiles to keep out cold and water.",
+          "hs": "Cold weather actually helps the buds: they need a certain amount of chilly weather, roughly between 0 and 10 °C, before they are ready to open in spring. Oak buds have many overlapping scales, and the cluster of buds at the twig tip is a good way to recognise oak in winter.",
+          "college": "Chilling accumulation, often counted as hours or chill units between about 0 and 7–10 °C, gradually releases endodormancy. Afterwards buds are ecodormant: ready to grow but held back by cold. Dormant buds survive temperatures far below freezing by tolerating ice forming outside their cells.",
+          "phd": "The shift from endo- to ecodormancy is defined operationally by forcing experiments: time to budburst under standard warm conditions. Warmer winters can reduce chilling, raising forcing requirements and potentially delaying or desynchronising budburst. Freezing tolerance relies on extracellular ice nucleation and controlled cellular dehydration, with supercooling in some tissues."
+        }
+      }
+    },
+    "flowers": {
+      "name": "Flowers",
+      "blurb": "Wind-pollinated catkins and tiny female flowers",
+      "related": ["buds", "acorns"],
+      "seasons": {
+        "spring": {
+          "ms": "Oaks have flowers, but they’re easy to miss! In May, long yellow-green strings called catkins hang from the branches. These are the male flowers, full of pollen. The female flowers are tiny reddish dots near the tips of new shoots.",
+          "hs": "Oaks are monoecious: each tree has separate male and female flowers. Catkins release huge amounts of pollen into the wind, so they need no petals or nectar to attract insects. A pollen grain that lands on the sticky stigma of a female flower can lead to an acorn.",
+          "college": "Wind pollination favours many small flowers, exposed stigmas and massive pollen output; oak pollen is a major spring allergen. Oaks are largely outcrossing, and pollen can travel hundreds of metres or more, linking populations genetically. Q. robur and sessile oak (Q. petraea) hybridise where they grow together.",
+          "phd": "In Quercus, fertilisation follows pollination by several weeks: pollen tubes pause while the ovary and ovules complete development. Microsatellite paternity analyses reveal extensive pollen-mediated gene flow and diverse effective pollen pools. Introgression between Q. robur and Q. petraea is partly directional and coexists with a limited set of strongly differentiated genomic regions."
+        },
+        "summer": {
+          "ms": "After pollination, the male catkins dry up and fall off. The tiny female flowers that were pollinated start growing into small green acorns sitting in little cups.",
+          "hs": "Fertilisation, when a sperm cell from the pollen joins the egg, happens in early summer. Each female flower has six ovules, but usually only one becomes the seed. The cup, called the cupule, grows around the base of the young acorn.",
+          "college": "The oak ovary is typically three-chambered with two ovules per chamber; one ovule usually develops while the others abort. Early on the embryo is fed by the endosperm, but in the mature acorn the large cotyledons hold the reserves. The cupule forms from structures below the flower, and its exact origin is still debated.",
+          "phd": "Ovule abortion in Quercus appears non-random, with positional and timing effects consistent with selective abortion or competition among ovules, so paternity of the surviving seed can be biased. Interpretations of cupule homology across Fagaceae range from modified branch systems to fused bracts. In section Quercus (white oaks) acorns mature in one season, whereas red oaks (section Lobatae) typically take two."
+        },
+        "autumn": {
+          "ms": "There are no flowers now. But hidden inside some of the buds are the tiny beginnings of next spring’s catkins, already forming.",
+          "hs": "The flowers for next spring are made this year, inside the buds. That’s why this year’s weather affects how many flowers bloom next spring, and how many acorns fall the autumn after.",
+          "college": "Male catkin primordia are initiated in buds during the summer before flowering; female flowers differentiate later, close to budburst, in the axils of the new shoot’s upper leaves. Resource status and weather during initiation influence flowering intensity, one ingredient of masting.",
+          "phd": "Masting, synchronised and highly variable acorn crops, emerges from weather cues, resource dynamics and pollen coupling. In Q. robur, spring weather during flowering appears to be a strong driver: warm, dry, synchronous flowering improves pollination success, as argued in work by Koenig, Bogdziewicz and colleagues. Resource-depletion feedbacks then reduce flowering the following year."
+        },
+        "winter": {
+          "ms": "Inside the winter buds, next year’s flowers are waiting, tiny and folded up, until warm spring days arrive.",
+          "hs": "If you sliced a winter oak bud lengthwise and looked under a microscope, you could see the miniature shoot with leaves and tiny catkins already in place. The tree made them last summer.",
+          "college": "Inflorescence primordia overwinter inside mixed buds, protected by scales. Their development resumes in late winter and early spring as dormancy is released, with meiosis and pollen development completed shortly before budburst.",
+          "phd": "Microsporogenesis in Quercus occurs in early spring, shortly before anthesis, making pollen development vulnerable to late frost. The timing of anthesis relative to leaf-out and among trees structures mating patterns: within-population variation in flowering phenology produces assortative mating and uneven paternal contributions."
+        }
+      }
+    },
+    "acorns": {
+      "name": "Acorns",
+      "blurb": "From flower to seed to seedling",
+      "related": ["flowers", "roots"],
+      "seasons": {
+        "spring": {
+          "ms": "Last autumn’s acorns that weren’t eaten have sprouted. The root came out first, and now a little shoot pushes up through the leaf litter. The acorn stays underground, feeding the seedling like a packed lunch.",
+          "hs": "Oak germination is hypogeal: the seed leaves, or cotyledons, stay inside the acorn underground instead of rising into the light. The seedling lives on the food stored in them for its first months, which helps it survive in fairly shady woods.",
+          "college": "Large seed reserves, mostly starch with some lipid and protein, make oak seedlings resilient: they can resprout after browsing because the cotyledons stay protected below ground. Seedlings invest heavily in a deep taproot early on, a strategy suited to drought and to recovering from damage.",
+          "phd": "Seed size trades off against seed number but buffers early carbon deficits and herbivory (the reserve effect). Elongating cotyledonary petioles push the epicotyl free while the cotyledons remain in the pericarp. Under closed canopies Q. robur regeneration is often light-limited and further suppressed by oak powdery mildew (Erysiphe alphitoides), which appeared in Europe in the early 1900s."
+        },
+        "summer": {
+          "ms": "Small green acorns are growing in their scaly cups. Pedunculate oak acorns hang on long stalks, which is where the tree’s name comes from: a peduncle is a stalk.",
+          "hs": "An acorn is a fruit, a nut, containing one seed. Over summer the tree pumps sugar into it, which is stored as starch in two thick seed leaves. Some acorns are eaten from the inside by weevil larvae, and some are turned into knobbly knopper galls by tiny wasps.",
+          "college": "Acorn filling is a major carbon sink that competes with wood growth; in big acorn years, ring width often drops. The pericarp hardens as the cotyledons fill with starch. Curculio weevils lay eggs in developing acorns, and the knopper gall wasp Andricus quercuscalicis, which needs Turkey oak for its other generation, deforms Q. robur acorns.",
+          "phd": "Resource-budget models predict a reproduction–growth trade-off; dendrochronological data often show narrower rings in mast years, though some evidence points to nutrient rather than carbon limitation. Predator satiation is a central evolutionary hypothesis for masting: highly variable crops starve specialist seed predators such as Curculio in lean years and swamp them in mast years."
+        },
+        "autumn": {
+          "ms": "Ripe brown acorns drop to the ground. Jays, squirrels, mice and deer feast on them. Jays bury thousands to eat later, and the forgotten ones may grow into new oak trees!",
+          "hs": "In some years an oak makes hardly any acorns; in others it makes huge numbers. This is called masting. In big years the animals can’t eat them all, so more survive. Jays are especially important planters: a single jay can bury several thousand acorns in one autumn.",
+          "college": "Oak seeds are recalcitrant: they can’t survive drying and are short-lived, so oaks can’t build a long-lasting seed bank. That makes dispersal and quick germination crucial. Scatter-hoarders such as the Eurasian jay (Garrulus glandarius), squirrels and mice carry acorns away from the parent and bury them at good depths for germination, a conditional mutualism.",
+          "phd": "Recalcitrance reflects incomplete late-embryogenesis desiccation-tolerance programmes, with limited accumulation of LEA proteins and protective oligosaccharides; Q. robur acorns lose viability when dried below roughly 30–40% moisture. Jay dispersal is directed toward open and edge habitats, shaping colonisation rates, and the post-glacial spread of oaks across Europe from southern refugia has been reconstructed from chloroplast DNA (Petit et al. 2002)."
+        },
+        "winter": {
+          "ms": "Many pedunculate oak acorns don’t wait for spring. Soon after falling, they push out a little root. Over winter the root anchors into the soil while the shoot waits for warmer days.",
+          "hs": "Buried acorns are protected from drying out and freezing by soil and leaf litter. Sending out a root early lets the acorn reach water straight away, and means the seedling is ready to grow the moment spring arrives.",
+          "college": "Acorns of white oaks (section Quercus), including Q. robur, have little or no dormancy and germinate soon after falling, while red oaks typically need cold stratification. A common pattern is radicle emergence in autumn followed by a dormant shoot over winter. Survival depends on burial, moisture and escaping rodents.",
+          "phd": "Contrasting germination syndromes across oak sections are thought to reflect climatic history and predator pressure: rapid germination shifts reserves into the taproot and lowers caching value, and squirrels excise embryos from non-dormant acorns in North American systems. Winter cold then releases epicotyl dormancy, synchronising shoot emergence with spring."
+        }
+      }
+    },
+    "wood": {
+      "name": "Trunk & wood",
+      "blurb": "Growth rings, water pipes and bark",
+      "related": ["leaves", "roots"],
+      "seasons": {
+        "spring": {
+          "ms": "Under the bark is a thin living layer called the cambium. In spring it wakes up and starts making new wood, so the trunk grows a little wider every year. The first wood of the year has big tubes to carry lots of water up to the new leaves.",
+          "hs": "Oak wood is ring-porous: in spring, before the leaves have even opened, the cambium makes very wide water-carrying tubes called vessels. They show up as a band of pores at the start of each tree ring, which is how you can count an oak’s age.",
+          "college": "In ring-porous species, new earlywood vessels form before or during budburst, because most of last year’s large vessels were blocked by air over winter. The cambium makes xylem toward the inside and phloem toward the outside. Earlywood vessels, often wider than 200 µm, conduct water very efficiently but are easily blocked by freeze–thaw embolism.",
+          "phd": "Cambial reactivation in ring-porous species precedes leaf-out and is fuelled by stored non-structural carbohydrates; auxin moving down from swelling buds is implicated in reactivation. Earlywood vessel traits (lumen area, density) are increasingly used as climate proxies recording late-winter and early-spring conditions, complementing latewood width, which tracks summer water balance."
+        },
+        "summer": {
+          "ms": "All summer the trunk carries water up and sugar down. Water climbs through the wood from the roots to the leaves, sometimes more than 20 metres! Sugar made in the leaves travels down through the inner bark to feed the roots.",
+          "hs": "Water is pulled up by evaporation from the leaves (transpiration) and held together as a continuous column inside the xylem. Sugars move down through the phloem in the inner bark. Later in summer the cambium makes latewood: denser wood with small vessels and thick fibres that give strength.",
+          "college": "The cohesion–tension theory explains sap ascent: transpiration creates negative pressure transmitted through the cohesive water column. Phloem transport follows Münch’s pressure-flow mechanism. Thick-walled latewood fibres create density contrast within each ring, and oak’s broad rays move water and stored carbohydrate sideways, producing the silver figure of quarter-sawn oak.",
+          "phd": "Xylem shows a safety–efficiency trade-off: the wide current-year earlywood vessels carry most of the hydraulic conductance in Q. robur yet are the most vulnerable to cavitation, while latewood vessels provide residual conductance. Drought-induced embolism, together with carbon depletion and biotic attack by bark beetles and pathogens, is central to explanations of recurring oak decline episodes."
+        },
+        "autumn": {
+          "ms": "In autumn the cambium slows down and stops. This year’s ring of wood is now complete. Lots of sugar is stored as starch in the wood, ready to use next spring.",
+          "hs": "Each ring is light, porous spring wood plus darker, denser summer wood. The boundary shows because growth stops in autumn and starts again in spring. Wide rings mean good growing years; narrow rings mean hard years, such as droughts.",
+          "college": "Living ray and axial parenchyma cells store starch and lipids built up in late summer and autumn. Older inner wood dies and becomes heartwood, darkened by extractives such as ellagitannins that make oak decay-resistant and flavour wine barrels. Heartwood vessels are plugged by tyloses, which is why oak barrels hold liquid.",
+          "phd": "Heartwood formation involves programmed death of ray parenchyma and synthesis of polyphenolic extractives such as vescalagin and castalagin at the sapwood–heartwood boundary. Tyloses, outgrowths of parenchyma through pits into vessels, occlude conduits and help compartmentalise decay (the CODIT model). European oak tree-ring chronologies run continuously for thousands of years and underpin radiocarbon calibration."
+        },
+        "winter": {
+          "ms": "In winter the trunk rests. Thick, rough bark protects the living layers inside from cold, sunburn and hungry animals. Many insects and spiders shelter in the cracks of the bark.",
+          "hs": "Frost makes air bubbles form in the water-filled vessels, blocking them. Oak’s huge spring vessels mostly stop working after winter, which is why the tree must build new ones each spring before its leaves come out.",
+          "college": "In freeze–thaw embolism, gases dissolved in the sap come out of solution when it freezes and form bubbles that expand under tension when it thaws. Wide conduits are most vulnerable, so ring-porous oaks lose most earlywood conductivity over winter and rely on new vessels each spring, which helps explain their relatively late leaf-out. Bark insulates the cambium.",
+          "phd": "The ring-porous hydraulic strategy couples tightly to phenology: conductance in the current-year ring constrains leaf-out timing, unlike in diffuse-porous species whose older vessels remain functional. Frost cracks may form from differential contraction of outer and inner wood. Over winter, starch–sugar interconversion in parenchyma supports cryoprotection and osmotic adjustment."
+        }
+      }
+    },
+    "roots": {
+      "name": "Roots & fungi",
+      "blurb": "An underground partnership",
+      "related": ["wood", "acorns", "leaves"],
+      "seasons": {
+        "spring": {
+          "ms": "Underground, the roots wake up too. New white root tips grow to soak up water and nutrients. Many of them are wrapped in fungal threads that help the tree.",
+          "hs": "Oak roots aren’t alone: most of their fine tips are covered by fungi in a partnership called mycorrhiza. The fungus spreads thin threads, called hyphae, far into the soil, gathering water, nitrogen and phosphorus. In return the tree pays the fungus with sugar.",
+          "college": "Oak forms ectomycorrhizae: a fungal mantle around each root tip plus the Hartig net between root cortex cells, where exchange happens. Fine-root growth in spring often alternates with shoot flushes. A single oak can partner with dozens to hundreds of fungal species, including Boletus, Russula, Lactarius, Amanita and Cortinarius.",
+          "phd": "Spring fine-root production relies on stored carbohydrates; in Q. robur, root and shoot growth alternate within rhythmic growth cycles, with root flushes during shoot rest phases. Ectomycorrhizal community composition shifts with soil nitrogen: across European forests, EM diversity declines along nitrogen deposition gradients (van der Linde et al. 2018, Nature)."
+        },
+        "summer": {
+          "ms": "In summer the fungi and roots are busy trading. The fungal threads are much thinner than roots and reach into tiny spaces between soil grains, bringing back water and food for the tree.",
+          "hs": "A sizeable share of the sugar a tree makes, often estimated at 10–20%, goes to its fungal partners. Fungal networks can also connect several trees, although scientists still debate how much they actually share through these links.",
+          "college": "Ectomycorrhizal fungi release enzymes that free nitrogen and phosphorus from organic matter, and their outward-growing mycelium vastly increases the absorbing surface. Carbon moves to the fungus as sugars across the Hartig net. Claims that trees share large amounts of resources through common mycorrhizal networks are now considered contested.",
+          "phd": "Nutrient exchange is context-dependent: under nitrogen limitation, fungi may retain N rather than pass it on, potentially worsening tree N limitation (Näsholm et al. 2013), which challenges simple biological-market models. Field evidence for net carbon transfer between trees via common mycorrhizal networks remains weak and heavily critiqued (Karst et al. 2023, Nature Ecology & Evolution)."
+        },
+        "autumn": {
+          "ms": "Autumn is mushroom season! Many mushrooms near oaks are the fruits of the fungi living on the oak’s roots. They release spores to spread.",
+          "hs": "Mushrooms like boletes and brittlegills pop up near oaks after autumn rain. They are the reproductive parts of fungi partnered with the tree. Meanwhile the roots keep growing until the soil gets cold, and store food for winter.",
+          "college": "Fruiting of ectomycorrhizal fungi peaks in autumn and is powered by recent tree photosynthate: experiments that cut off phloem flow by girdling stop mushroom production. Fine roots often keep growing after leaf fall while the soil stays warm, so below-ground timing is decoupled from the canopy.",
+          "phd": "Girdling experiments (Högberg et al. 2001) showed that recent photosynthate drives a large share of soil respiration and EM sporocarp production, coupling canopy activity to soil carbon fluxes within days. Root phenology lags canopy phenology and is temperature-limited; this asynchrony complicates ecosystem models that assume coupled above- and below-ground allocation."
+        },
+        "winter": {
+          "ms": "Even in winter, roots deep in the soil stay alive and can grow slowly where the ground isn’t frozen. Snow acts like a blanket, keeping the soil warmer.",
+          "hs": "Roots hold big stores of starch for spring. Young oaks grow a strong taproot, and older oaks develop a deep, wide-spreading root system that anchors them in storms and reaches water in dry summers, though most fine roots stay in the upper soil.",
+          "college": "Soil freezing and freeze–thaw cycles can kill fine roots, and snow cover insulates and stabilises soil temperature. Root growth can continue at soil temperatures just above freezing. Starch stored in coarse roots will fuel the spring flush of fine roots and the reactivation of the cambium.",
+          "phd": "Thinner snow cover under warming can paradoxically increase soil frost (colder soils in a warmer world, Groffman et al. 2001), damaging fine roots and altering nitrogen cycling. Winter root and mycorrhizal activity contributes to non-growing-season soil respiration, a non-trivial part of the annual carbon balance of temperate forests."
+        }
+      }
+    }
+  }
+}
+</script>
+
+<script type="application/json" id="oak-glossary">
+{
+  "abscission": { "def": "The controlled shedding of a leaf or other organ at a pre-formed separation layer.", "match": ["abscission"] },
+  "anthocyanins": { "def": "Red-to-purple pigments that can shield young tissues from excess light.", "match": ["anthocyanins", "anthocyanin"] },
+  "cambium": { "def": "A thin layer of dividing cells that makes new wood inward and new inner bark outward.", "match": ["cambium", "cambial"] },
+  "catkins": { "def": "Dangling spikes of many small, petal-less flowers. In oak, the catkins are the male flowers.", "match": ["catkins", "catkin"] },
+  "chlorophyll": { "def": "The green pigment that captures light energy for photosynthesis.", "match": ["chlorophyll"] },
+  "cotyledons": { "def": "Seed leaves. In an acorn they are thick and packed with stored food.", "match": ["cotyledons", "cotyledon", "cotyledonary"] },
+  "cupule": { "def": "The scaly cup that holds the base of an acorn.", "match": ["cupule"] },
+  "ectomycorrhizae": { "def": "Root–fungus partnerships in which the fungus wraps the root tip in a sheath and grows between its outer cells.", "match": ["ectomycorrhizae", "ectomycorrhizal", "mycorrhiza", "mycorrhizal"] },
+  "endodormancy": { "def": "Deep dormancy controlled inside the bud itself; only a long period of cold releases it.", "match": ["endodormancy", "endo-"] },
+  "ecodormancy": { "def": "Dormancy imposed by the environment, such as cold. Growth resumes as soon as conditions allow.", "match": ["ecodormant", "ecodormancy"] },
+  "embolism": { "def": "An air bubble that blocks a water-conducting vessel in the wood.", "match": ["embolism"] },
+  "heartwood": { "def": "The dead, darkened inner wood of a trunk, rich in decay-resistant compounds.", "match": ["heartwood"] },
+  "hyphae": { "def": "The microscopic threads that make up the body of a fungus.", "match": ["hyphae", "mycelium"] },
+  "hypogeal": { "def": "A type of germination in which the seed leaves stay below ground.", "match": ["hypogeal"] },
+  "Lammas growth": { "def": "A second, midsummer flush of shoots, named after Lammas Day on 1 August.", "match": ["Lammas"] },
+  "marcescence": { "def": "Keeping dead leaves attached through winter.", "match": ["marcescence"] },
+  "masting": { "def": "Synchronised, highly variable seed production: many trees produce huge crops in the same years.", "match": ["masting", "mast years"] },
+  "monoecious": { "def": "Having separate male and female flowers on the same plant.", "match": ["monoecious"] },
+  "phloem": { "def": "Tissue in the inner bark that carries sugars around the plant.", "match": ["phloem"] },
+  "photoperiod": { "def": "Day length, which plants use as a reliable calendar.", "match": ["photoperiod"] },
+  "primordia": { "def": "Tiny, newly formed organs, such as future leaves, at a growing tip.", "match": ["primordia"] },
+  "recalcitrant": { "def": "Describes seeds that die if dried and so can’t be stored for long.", "match": ["recalcitrant", "recalcitrance"] },
+  "ring-porous": { "def": "Wood whose widest vessels form in spring, in a distinct band at the start of each annual ring.", "match": ["ring-porous"] },
+  "Rubisco": { "def": "The enzyme that fixes CO₂ in photosynthesis, probably the most abundant protein on Earth.", "match": ["Rubisco"] },
+  "senescence": { "def": "The programmed ageing and breakdown of a tissue, like leaves in autumn.", "match": ["senescence"] },
+  "stomata": { "def": "Microscopic pores, mostly on the leaf underside, opened and closed by pairs of guard cells.", "match": ["stomata", "stomatal"] },
+  "tannins": { "def": "Bitter polyphenols that deter herbivores and slow decay.", "match": ["tannins", "tannin"] },
+  "tyloses": { "def": "Balloon-like outgrowths of living cells that plug old vessels in heartwood.", "match": ["tyloses"] },
+  "xylem": { "def": "Wood tissue that carries water and minerals up from the roots.", "match": ["xylem"] },
+  "Hartig net": { "def": "A web of fungal hyphae growing between root cortex cells, where tree and fungus exchange resources.", "match": ["Hartig net"] },
+  "isoprene": { "def": "A small volatile hydrocarbon released by oak leaves, especially in heat.", "match": ["isoprene"] },
+  "transpiration": { "def": "Evaporation of water from leaves, which pulls water up through the plant.", "match": ["transpiration"] },
+  "vessels": { "def": "Wide, tube-like cells joined end to end that carry water through the wood.", "match": ["vessels"] }
+}
+</script>
+
+<script type="application/json" id="oak-months">
+[
+  "Deep winter rest. Buds collect the cold they need before they can open.",
+  "Chilling is mostly done. The buds now wait only for warmth.",
+  "Stored starch starts to move. The cambium stirs under the bark.",
+  "New spring wood forms first; then buds swell and crack open.",
+  "Leaves unfold and catkins shed clouds of pollen.",
+  "Full canopy. Pollinated flowers become tiny acorns.",
+  "Peak photosynthesis. Next year’s buds quietly take shape.",
+  "Lammas shoots appear; acorns fill with starch.",
+  "Acorns ripen and drop. Jays start burying them.",
+  "Leaves turn gold and brown as nutrients are pulled back. Mushrooms appear.",
+  "Leaves fall. Acorns sprout roots and buds settle into dormancy.",
+  "The tree rests on stored sugar, wrapped in bark."
+]
+</script>
+
+<script>
+(() => {
+"use strict";
+
+/* =========================================================================
+   UTILITIES
+   ========================================================================= */
+const $ = (s, r = document) => r.querySelector(s);
+const NS = "http://www.w3.org/2000/svg";
+const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const smooth = t => t * t * (3 - 2 * t);
+const f1 = n => Math.round(n * 10) / 10;
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+function hex2rgb(h){ h = h.replace("#", ""); return [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16)); }
+function rgb2hex(r){ return "#" + r.map(v => Math.round(clamp(v, 0, 255)).toString(16).padStart(2, "0")).join(""); }
+function mix(a, b, t){ const A = hex2rgb(a), B = hex2rgb(b); return rgb2hex(A.map((v, i) => lerp(v, B[i], t))); }
+function mulberry32(a){ return function(){ a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+function el(tag, attrs = {}, parent){ const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; }
+const readJSON = id => JSON.parse(document.getElementById(id).textContent);
+const storage = {
+  get(k){ try { return localStorage.getItem(k); } catch(e){ return null; } },
+  set(k, v){ try { localStorage.setItem(k, v); } catch(e){} }
+};
+const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+/* =========================================================================
+   CONFIG + DATA
+   ========================================================================= */
+const CONTENT = readJSON("oak-content");
+const GLOSSARY = readJSON("oak-glossary");
+const MONTH_NOTES = readJSON("oak-months");
+
+const CONFIG = {
+  world: { w: 1200, h: 900, ground: 620, cx: 600 },
+  seed: 7,
+  monthsPerSecond: 0.85,
+  tree: { maxDepth: 7, trunkLen: 120, trunkWidth: 46 },
+  zoomAspect: 0.75
+};
+
+const LEVELS = [
+  { id: "ms", label: "Middle school", short: "Middle" },
+  { id: "hs", label: "High school", short: "High" },
+  { id: "college", label: "College", short: "College" },
+  { id: "phd", label: "PhD", short: "PhD" }
+];
+const LEVEL_INDEX = Object.fromEntries(LEVELS.map((l, i) => [l.id, i]));
+
+const SEASONS = [
+  { id: "winter", label: "Winter", rep: 0.5 },
+  { id: "spring", label: "Spring", rep: 4.45 },
+  { id: "summer", label: "Summer", rep: 6.5 },
+  { id: "autumn", label: "Autumn", rep: 9.45 }
+];
+const MONTH_SEASON = ["winter","winter","spring","spring","spring","summer","summer","summer","autumn","autumn","autumn","winter"];
+const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+
+const STRINGS = {
+  introTitle: "A year in the life of an oak",
+  introLede: "Scrub through the months to watch the tree change, then choose a part of the tree to look closer. The same story is told at four depths, from first curiosity to current research.",
+  explore: "Look closer",
+  hint: "Tip: dotted words have short definitions. Hover or tap them.",
+  wholeTree: "Whole tree",
+  follow: "Follow this through the year",
+  deeper: lvl => `Go deeper: ${lvl}`,
+  simpler: lvl => `Simpler: ${lvl}`,
+  seeAlso: "Connected parts of the tree",
+  missing: "There’s no text for this season yet."
+};
+
+/* Phenology keyframes: one value per month (mid-month). Temperate N. Europe. */
+const PHENOLOGY = {
+  leaf:        [0, 0, 0, .08, .78, 1, 1, 1, .97, .8, .22, 0],
+  leafColor:   ["#8a5a35","#8a5a35","#8a5a35","#b4bd62","#93b04c","#5a8f3f","#447d36","#3f7333","#6c8a37","#c28a2c","#9a6232","#8a5a35"],
+  catkin:      [0, 0, 0, .2, 1, .12, 0, 0, 0, 0, 0, 0],
+  acorn:       [0, 0, 0, 0, 0, .25, .6, .85, 1, .65, .1, 0],
+  acornRipe:   [1, 1, 1, 0, 0, 0, 0, .1, .55, 1, 1, 1],
+  acornGround: [.35, .25, .15, 0, 0, 0, 0, 0, .3, 1, .8, .5],
+  snow:        [1, .75, .15, 0, 0, 0, 0, 0, 0, 0, .1, .6],
+  snowfall:    [1, .7, .1, 0, 0, 0, 0, 0, 0, 0, .15, .8],
+  leafFall:    [0, 0, 0, 0, 0, 0, 0, 0, .15, .9, .7, 0],
+  mushroom:    [0, 0, 0, 0, 0, 0, 0, .1, .5, 1, .4, 0],
+  hyphae:      [.35, .35, .45, .6, .8, .9, 1, 1, .95, .85, .6, .4],
+  grass:       ["#a39e86","#a39e86","#9fa071","#96ad5e","#7fa64d","#6f9a46","#6f9443","#7c8f45","#8d8c4c","#9a8a52","#958b63","#a39e86"]
+};
+const WINTER_ACCENT = "#6d8797";
+
+const Phenology = {
+  at(m){
+    const p = ((m - 0.5) % 12 + 12) % 12;
+    const i = Math.floor(p), j = (i + 1) % 12, t = smooth(p - i);
+    const out = {};
+    for (const k in PHENOLOGY){
+      const a = PHENOLOGY[k][i], b = PHENOLOGY[k][j];
+      out[k] = typeof a === "string" ? mix(a, b, t) : lerp(a, b, t);
+    }
+    out.accent = mix(WINTER_ACCENT, out.leafColor, clamp(out.leaf * 2.2));
+    return out;
+  }
+};
+const seasonOf = m => MONTH_SEASON[Math.floor(((m % 12) + 12) % 12)];
+
+/* =========================================================================
+   STORE — single source of truth
+   ========================================================================= */
+function createStore(initial){
+  let state = initial; const subs = new Set();
+  return {
+    get: () => state,
+    set(patch){ const prev = state; state = { ...state, ...patch }; subs.forEach(f => f(state, prev)); },
+    subscribe(f){ subs.add(f); return () => subs.delete(f); }
+  };
+}
+const now = new Date();
+const dim = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+const savedLevel = storage.get("oakyear.level");
+const store = createStore({
+  month: now.getMonth() + (now.getDate() - 1) / dim,
+  level: LEVEL_INDEX[savedLevel] !== undefined ? savedLevel : "hs",
+  topic: null,
+  playing: false
+});
+
+/* =========================================================================
+   GEOMETRY — seeded, deterministic tree + roots
+   ========================================================================= */
+function growTree(R){
+  const segs = [], tips = [];
+  const { maxDepth, trunkLen, trunkWidth } = CONFIG.tree;
+  (function br(x, y, a, len, w, d){
+    const bend = d < 2 ? (R() - .5) * .15 : (R() - .5) * .6;
+    const x2 = x + Math.cos(a) * len, y2 = y + Math.sin(a) * len;
+    const cx = x + Math.cos(a + bend) * len * .55, cy = y + Math.sin(a + bend) * len * .55;
+    segs.push({ x, y, cx, cy, x2, y2, w, d, a });
+    if (d >= maxDepth){ tips.push({ x: x2, y: y2, a, d }); return; }
+    if (d >= maxDepth - 2) tips.push({ x: x2, y: y2, a, d });
+    const n = d === 0 ? 3 : (R() < .35 ? 3 : 2);
+    const spread = d < 2 ? 1.0 : .56;
+    for (let i = 0; i < n; i++){
+      let na = a + (i - (n - 1) / 2) * spread * (.8 + R() * .5) + (R() - .5) * .3;
+      na += (-Math.PI / 2 - na) * .04;
+      na = clamp(na, -Math.PI + .08, -.08);
+      br(x2, y2, na, len * (d === 0 ? .82 : .7 + R() * .09), Math.max(1, w * (n === 3 ? .6 : .68)), d + 1);
+    }
+  })(CONFIG.world.cx, CONFIG.world.ground, -Math.PI / 2, trunkLen, trunkWidth, 0);
+  return { segs, tips };
+}
+function growRoots(R){
+  const segs = [], tips = [];
+  const G = CONFIG.world.ground;
+  const starts = [.06, .22, .4, .6, .78, .94];
+  starts.forEach((f, k) => {
+    const a = Math.PI * f;
+    (function br(x, y, a, len, w, d){
+      a = clamp(a, .04, Math.PI - .04);
+      const x2 = x + Math.cos(a) * len, y2 = Math.max(G + 6, y + Math.sin(a) * len);
+      const bend = (R() - .5) * .7;
+      const cx = x + Math.cos(a + bend) * len * .5, cy = Math.max(G + 4, y + Math.sin(a + bend) * len * .5);
+      segs.push({ x, y, cx, cy, x2, y2, w, d });
+      if (d >= 4){ tips.push({ x: x2, y: y2, a }); return; }
+      const n = R() < .3 ? 3 : 2;
+      for (let i = 0; i < n; i++){
+        const na = a + (i - (n - 1) / 2) * .6 + (R() - .5) * .5 + .08;
+        br(x2, y2, na, len * (.72 + R() * .12), Math.max(.8, w * .6), d + 1);
+      }
+    })(CONFIG.world.cx + (f - .5) * 40, G + 4, a, 62 + R() * 18, 13 - Math.abs(f - .5) * 6, 0);
+  });
+  return { segs, tips };
+}
+
+/* =========================================================================
+   SCENE — renders the whole tree from phenology
+   ========================================================================= */
+const Scene = (() => {
+  const svg = $("#scene");
+  const R = mulberry32(CONFIG.seed);
+  const G = CONFIG.world.ground;
+  let tree, roots, leafEls = [], leafGroups = [], acornEls = [], groundAcorns = [], mushrooms = [], parts = {};
+  const focusPoints = {};
+
+  function nearest(list, x, y){
+    let best = list[0], bd = Infinity;
+    for (const p of list){ const d = (p.x - x) ** 2 + (p.y - y) ** 2; if (d < bd){ bd = d; best = p; } }
+    return best;
+  }
+  const qpath = s => `M${f1(s.x)} ${f1(s.y)}Q${f1(s.cx)} ${f1(s.cy)} ${f1(s.x2)} ${f1(s.y2)}`;
+
+  function build(){
+    tree = growTree(R); roots = growRoots(R);
+    svg.innerHTML = "";
+    const defs = el("defs", {}, svg);
+    defs.innerHTML = `
+      <linearGradient id="soilGrad" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" style="stop-color:var(--soil-top)"/><stop offset=".55" style="stop-color:var(--soil-bot)"/>
+        <stop offset="1" style="stop-color:var(--bg)"/>
+      </linearGradient>
+      <radialGradient id="glowGrad"><stop offset="0" style="stop-color:var(--accent);stop-opacity:.22"/><stop offset="1" style="stop-color:var(--accent);stop-opacity:0"/></radialGradient>`;
+    el("circle", { cx: 600, cy: 300, r: 560, fill: "url(#glowGrad)" }, svg);
+
+    /* ground + soil cutaway */
+    el("rect", { x: -3000, y: G, width: 7200, height: 520, fill: "url(#soilGrad)" }, svg);
+    const rootG = el("g", { id: "roots" }, svg);
+    roots.segs.forEach(s => el("path", { d: qpath(s), class: "rt", "stroke-width": f1(s.w) }, rootG));
+    parts.hyphae = el("g", {}, svg);
+    roots.tips.forEach(t => {
+      for (let i = 0; i < 4; i++){
+        const a = t.a + (R() - .5) * 2.4, L = 10 + R() * 16;
+        const mx = t.x + Math.cos(a) * L * .5 + (R() - .5) * 6, my = t.y + Math.sin(a) * L * .5 + (R() - .5) * 6;
+        el("path", { d: `M${f1(t.x)} ${f1(t.y)}Q${f1(mx)} ${f1(my)} ${f1(t.x + Math.cos(a) * L)} ${f1(t.y + Math.sin(a) * L)}`, class: "hy" }, parts.hyphae);
+      }
+    });
+    parts.grass = el("rect", { x: -3000, y: G - 3, width: 7200, height: 6 }, svg);
+    parts.snowGround = el("rect", { x: -3000, y: G - 9, width: 7200, height: 12, rx: 6, fill: "#f7faf9" }, svg);
+
+    /* fallen acorns + mushrooms */
+    const ga = el("g", {}, svg);
+    for (let i = 0; i < 14; i++){
+      const x = 440 + R() * 320, t = R();
+      const e = el("ellipse", { cx: f1(x), cy: G - 2.5, rx: 3, ry: 2.2, fill: "#7a4e26", transform: `rotate(${f1(R() * 60 - 30)} ${f1(x)} ${G - 2})` }, ga);
+      groundAcorns.push({ e, t });
+    }
+    const mg = el("g", {}, svg);
+    [[452, 1], [470, .7], [748, .85], [905, .6]].forEach(([x, s]) => {
+      const g = el("g", {}, mg);
+      g.innerHTML = `<rect x="-1.8" y="-10" width="3.6" height="10" rx="1.5" fill="#efe5d0"/><path d="M-9 -9 Q0 -21 9 -9 Z" fill="#8b5a2b"/>`;
+      mushrooms.push({ g, x, s });
+    });
+
+    /* tree */
+    const trunkG = el("g", { id: "tree" }, svg);
+    const cx = CONFIG.world.cx;
+    el("path", { class: "flare", d: `M${cx - 58} ${G + 2}Q${cx - 26} ${G - 6} ${cx - 22} ${G - 70}L${cx + 22} ${G - 70}Q${cx + 28} ${G - 6} ${cx + 62} ${G + 2}Z` }, trunkG);
+    tree.segs.forEach(s => el("path", { d: qpath(s), class: "br", "stroke-width": f1(s.w) }, trunkG));
+
+    /* snow on branches */
+    parts.snowBr = el("g", { fill: "none", stroke: "#f7faf9", "stroke-linecap": "round" }, svg);
+    tree.segs.filter(s => s.d <= 5 && s.d >= 1 && Math.abs(Math.cos(s.a)) > .35).forEach(s => {
+      el("path", { d: qpath(s), "stroke-width": f1(Math.max(1.4, s.w * .38)), transform: `translate(0 ${f1(-s.w * .42)})` }, parts.snowBr);
+    });
+
+    /* focus points for topics (picked from geometry) */
+    focusPoints.leaves = nearest(tree.tips, 760, 200);
+    focusPoints.buds = nearest(tree.tips, 340, 300);
+    focusPoints.flowers = nearest(tree.tips, 920, 400);
+    focusPoints.acorns = nearest(tree.tips, 470, 330);
+    focusPoints.wood = { x: cx, y: G - 60 };
+    focusPoints.roots = nearest(roots.tips, 700, 770);
+
+    /* leaves */
+    const leafRoot = el("g", { id: "leaves" }, svg);
+    leafGroups = [0, 1, 2].map(() => el("g", {}, leafRoot));
+    tree.tips.forEach(t => {
+      const n = t.d >= CONFIG.tree.maxDepth ? 3 : 2;
+      for (let i = 0; i < n; i++){
+        const r0 = 7 + R() * 8, sh = Math.floor(R() * 3);
+        const c = el("circle", { cx: f1(t.x + (R() - .5) * 26), cy: f1(t.y + (R() - .5) * 22 - 3), r: r0 }, leafGroups[sh]);
+        leafEls.push({ c, r0, t: R() });
+      }
+    });
+
+    /* catkins */
+    parts.catkins = el("g", { fill: "none", stroke: "#c4b04a", "stroke-width": 2.4, "stroke-linecap": "round", "stroke-dasharray": "0.1 2.7" }, svg);
+    tree.tips.forEach(t => {
+      const near = Math.hypot(t.x - focusPoints.flowers.x, t.y - focusPoints.flowers.y) < 70;
+      if (!(near || R() < .3)) return;
+      for (let i = 0; i < 3; i++){
+        const dx = (R() - .5) * 10, L = 12 + R() * 9;
+        el("path", { d: `M${f1(t.x)} ${f1(t.y)}q${f1(dx * .2)} ${f1(L * .5)} ${f1(dx)} ${f1(L)}` }, parts.catkins);
+      }
+    });
+
+    /* acorns on the tree */
+    const ag = el("g", {}, svg);
+    tree.tips.forEach(t => {
+      const near = Math.hypot(t.x - focusPoints.acorns.x, t.y - focusPoints.acorns.y) < 70;
+      if (!(near || R() < .1)) return;
+      const g = el("g", {}, ag);
+      g.innerHTML = `<path d="M0 0 Q1 6 2 11" stroke="var(--trunk)" stroke-width=".9" fill="none"/>
+        <g transform="translate(2 11) rotate(-14)"><ellipse class="nut" cx="0" cy="4.2" rx="2.6" ry="3.9"/><path class="cup" d="M-2.9 2 Q-3 -.6 0 -.6 Q3 -.6 2.9 2Z"/></g>
+        <g transform="translate(2 11) rotate(22)"><ellipse class="nut" cx="0" cy="4.2" rx="2.6" ry="3.9"/><path class="cup" d="M-2.9 2 Q-3 -.6 0 -.6 Q3 -.6 2.9 2Z"/></g>`;
+      acornEls.push({ g, x: t.x, y: t.y, t: R(), nuts: g.querySelectorAll(".nut"), cups: g.querySelectorAll(".cup") });
+    });
+
+    parts.particles = el("g", { id: "particles" }, svg);
+    parts.ring = el("circle", { r: 16, class: "focus-ring" }, svg);
+    parts.bbox = computeBBox();
+  }
+
+  function computeBBox(){
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    [...tree.segs, ...roots.segs].forEach(s => {
+      x0 = Math.min(x0, s.x2); x1 = Math.max(x1, s.x2); y0 = Math.min(y0, s.y2); y1 = Math.max(y1, s.y2);
+    });
+    return { x0: x0 - 30, x1: x1 + 30, y0: y0 - 30, y1: y1 + 20 };
+  }
+
+  let lastM = -1;
+  function update(m){
+    if (Math.abs(m - lastM) < .004) return;
+    lastM = m;
+    const ph = Phenology.at(m);
+    document.documentElement.style.setProperty("--accent", ph.accent);
+    document.documentElement.dataset.season = seasonOf(m);
+
+    const base = ph.leafColor;
+    const shades = [mix(base, "#1c2a14", .22), base, mix(base, "#f4f0c8", .18)];
+    leafGroups.forEach((g, i) => g.setAttribute("fill", shades[i]));
+    const L = ph.leaf;
+    for (const l of leafEls){
+      const v = clamp((L * 1.12 - l.t) / .12);
+      l.c.setAttribute("r", f1(l.r0 * (.3 + .7 * v)));
+      l.c.setAttribute("opacity", f1(v));
+    }
+    parts.catkins.setAttribute("opacity", f1(ph.catkin));
+    const nut = mix("#8fa650", "#86522a", ph.acornRipe), cup = mix("#76903f", "#9b8059", ph.acornRipe);
+    for (const a of acornEls){
+      const v = clamp((ph.acorn * 1.1 - a.t * .9) / .15);
+      const s = (.3 + .7 * clamp(ph.acorn * 1.3)) * .95;
+      a.g.setAttribute("transform", `translate(${f1(a.x)} ${f1(a.y)}) scale(${f1(s * 100) / 100})`);
+      a.g.setAttribute("opacity", f1(v));
+      a.nuts.forEach(n => n.setAttribute("fill", nut));
+      a.cups.forEach(c => c.setAttribute("fill", cup));
+    }
+    for (const a of groundAcorns) a.e.setAttribute("opacity", f1(clamp((ph.acornGround * 1.1 - a.t) / .15)));
+    for (const mu of mushrooms){
+      const s = mu.s * ph.mushroom;
+      mu.g.setAttribute("transform", `translate(${mu.x} ${G}) scale(${f1(s * 100) / 100})`);
+      mu.g.setAttribute("opacity", s > .02 ? 1 : 0);
+    }
+    parts.grass.setAttribute("fill", ph.grass);
+    parts.snowGround.setAttribute("opacity", f1(ph.snow));
+    parts.snowBr.setAttribute("opacity", f1(clamp(ph.snow * 1.2)));
+    parts.hyphae.setAttribute("opacity", f1(ph.hyphae * .75));
+    Particles.setRates(ph);
+  }
+
+  function focus(id){
+    const p = id && focusPoints[id];
+    if (p){ parts.ring.setAttribute("cx", f1(p.x)); parts.ring.setAttribute("cy", f1(p.y)); }
+    parts.ring.classList.toggle("on", !!p);
+  }
+  return { build, update, focus, svg, focusPoints, get bbox(){ return parts.bbox; }, get particles(){ return parts.particles; } };
+})();
+
+/* =========================================================================
+   PARTICLES — falling leaves & snow (ambient, respects reduced motion)
+   ========================================================================= */
+const Particles = (() => {
+  const list = []; let leafRate = 0, snowRate = 0, color = "#a06a30", accL = 0, accS = 0;
+  const G = CONFIG.world.ground;
+  function setRates(ph){ leafRate = ph.leafFall * 5 * ph.leaf; snowRate = ph.snowfall * 26; color = ph.leafColor; }
+  function spawn(kind){
+    const g = Scene.particles; if (!g) return;
+    if (kind === "leaf"){
+      const x = 330 + Math.random() * 560, y = 160 + Math.random() * 260;
+      const e = el("ellipse", { rx: 4.5, ry: 2.4, fill: color }, g);
+      list.push({ e, kind, x, y, vy: 26 + Math.random() * 22, ph: Math.random() * 6, rot: Math.random() * 360 });
+    } else {
+      const x = -100 + Math.random() * 1400, y = -40;
+      const e = el("circle", { r: f1(1.4 + Math.random() * 1.8), fill: "#ffffff", stroke: "rgba(110,125,135,.35)", "stroke-width": .5 }, g);
+      list.push({ e, kind, x, y, vy: 32 + Math.random() * 26, ph: Math.random() * 6 });
+    }
+  }
+  function tick(dt){
+    if (reducedMotion) return;
+    accL += leafRate * dt; accS += snowRate * dt;
+    while (accL > 1 && list.length < 60){ spawn("leaf"); accL--; }
+    while (accS > 1 && list.length < 140){ spawn("snow"); accS--; }
+    accL = Math.min(accL, 1); accS = Math.min(accS, 1);
+    for (let i = list.length - 1; i >= 0; i--){
+      const p = list[i];
+      p.ph += dt * (p.kind === "leaf" ? 2.2 : 1.2);
+      p.y += p.vy * dt;
+      const sx = Math.sin(p.ph) * (p.kind === "leaf" ? 16 : 8);
+      if (p.kind === "leaf"){ p.rot += dt * 120; p.e.setAttribute("transform", `translate(${f1(p.x + sx)} ${f1(p.y)}) rotate(${f1(p.rot)})`); }
+      else { p.e.setAttribute("cx", f1(p.x + sx)); p.e.setAttribute("cy", f1(p.y)); }
+      const offSeason = p.kind === "leaf" ? leafRate < .05 : snowRate < .2;
+      if (offSeason){ p.fade = (p.fade ?? 1) - dt * 2.5; p.e.setAttribute("opacity", f1(Math.max(0, p.fade))); }
+      if (p.y > G - 3 || p.fade <= 0){ p.e.remove(); list.splice(i, 1); }
+    }
+  }
+  return { setRates, tick };
+})();
+
+/* =========================================================================
+   CAMERA — animated viewBox
+   ========================================================================= */
+const Camera = (() => {
+  const svg = $("#scene");
+  let cur = null, from = null, to = null, t0 = 0, dur = 950, moving = false;
+  function homeView(){
+    const b = Scene.bbox, wrap = $("#sceneWrap");
+    const asp = wrap.clientHeight / Math.max(1, wrap.clientWidth);
+    let w = (b.x1 - b.x0), h = (b.y1 - b.y0);
+    /* leave headroom for the month heading in the sky */
+    const top = b.y0 - h * .16;
+    h = b.y1 - top;
+    if (h / w < asp) h = w * asp; else w = h / asp;
+    const cx = (b.x0 + b.x1) / 2;
+    return { x: cx - w / 2, y: top, w, h };
+  }
+  function focusView(p, wWorld){
+    const wrap = $("#sceneWrap");
+    const asp = wrap.clientHeight / Math.max(1, wrap.clientWidth);
+    const w = wWorld, h = w * asp;
+    return { x: p.x - w / 2, y: p.y - h / 2, w, h };
+  }
+  function apply(v){ svg.setAttribute("viewBox", `${f1(v.x)} ${f1(v.y)} ${f1(v.w)} ${f1(v.h)}`); cur = v; }
+  function go(v, instant){
+    if (instant || reducedMotion || !cur){ apply(v); moving = false; Hotspots.place(); return; }
+    from = { ...cur }; to = v; t0 = performance.now(); moving = true;
+  }
+  function tick(now){
+    if (!moving) return false;
+    const t = clamp((now - t0) / dur), e = t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+    /* zoom in log space for a natural feel */
+    const w = Math.exp(lerp(Math.log(from.w), Math.log(to.w), e));
+    const fcx = from.x + from.w / 2, fcy = from.y + from.h / 2, tcx = to.x + to.w / 2, tcy = to.y + to.h / 2;
+    const cx = lerp(fcx, tcx, e), cy = lerp(fcy, tcy, e);
+    const h = w * (to.h / to.w);
+    apply({ x: cx - w / 2, y: cy - h / 2, w, h });
+    if (t >= 1){ moving = false; apply(to); }
+    return true;
+  }
+  return { go, tick, homeView, focusView };
+})();
+
+/* =========================================================================
+   TOPICS REGISTRY
+   ========================================================================= */
+const Topics = new Map();
+const App = {
+  registerTopic(def){ Topics.set(def.id, def); return def; },
+  store, Phenology, CONFIG, LEVELS, SEASONS
+};
+window.OakYear = App; /* handy for future plugins / console exploration */
+
+/* ---------- illustration helpers ---------- */
+let UID = 0;
+function makeCtx(s){
+  const mi = Math.floor(s.month) % 12;
+  const ctx = {
+    month: s.month, monthIndex: mi, season: MONTH_SEASON[mi], li: LEVEL_INDEX[s.level],
+    ph: Phenology.at(s.month), labels: [], marks: "", rng: mulberry32(31),
+    mark(x, y, text, min = 0){
+      if (this.li < min) return;
+      const t = Array.isArray(text) ? text[Math.min(this.li, text.length - 1)] : text;
+      this.labels.push(t);
+      this.marks += `<g class="mk"><circle cx="${f1(x)}" cy="${f1(y)}" r="7.5"/><text x="${f1(x)}" y="${f1(y + 3.3)}">${this.labels.length}</text></g>`;
+    }
+  };
+  return ctx;
+}
+function magnifier(cx, cy, r, inner){
+  const id = "clip" + (++UID);
+  return `<clipPath id="${id}"><circle cx="${cx}" cy="${cy}" r="${r}"/></clipPath>
+    <circle cx="${cx}" cy="${cy}" r="${r}" class="mag-bg"/><g clip-path="url(#${id})">${inner}</g>
+    <circle cx="${cx}" cy="${cy}" r="${r}" class="mag-ring"/>`;
+}
+function loupe(x, y, cx, cy, r){
+  const a = Math.atan2(y - cy, x - cx);
+  return `<circle cx="${x}" cy="${y}" r="9" class="loupe"/><line x1="${f1(x - Math.cos(a) * 9)}" y1="${f1(y - Math.sin(a) * 9)}" x2="${f1(cx + Math.cos(a) * r)}" y2="${f1(cy + Math.sin(a) * r)}" class="loupe"/>`;
+}
+function oakLeafPath(len, wid, lobes = 5, phase = .08){
+  const N = 90, Rt = [], Lt = [];
+  for (let i = 0; i <= N; i++){
+    const t = i / N;
+    const env = Math.pow(Math.sin(Math.PI * Math.pow(t, 1.25)), .9);
+    const aur = .3 * Math.exp(-Math.pow((t - .05) / .035, 2));
+    const lr = .58 + .42 * Math.pow(Math.abs(Math.sin(Math.PI * lobes * t)), .7);
+    const ll = .58 + .42 * Math.pow(Math.abs(Math.sin(Math.PI * (lobes * t + phase))), .7);
+    Rt.push([wid * (env * lr + aur), -t * len]); Lt.push([-wid * (env * ll + aur), -t * len]);
+  }
+  let d = "M0 0";
+  Rt.forEach(p => d += `L${f1(p[0])} ${f1(p[1])}`);
+  for (let i = N; i >= 0; i--) d += `L${f1(Lt[i][0])} ${f1(Lt[i][1])}`;
+  return d + "Z";
+}
+function oakLeaf(len, wid, fill, opts = {}){
+  const vein = opts.vein || mix(fill, "#1e2a12", .3);
+  const lobes = 5;
+  let veins = `<path d="M0 6 L0 ${-len * .97}" stroke="${vein}" stroke-width="${f1(len / 90)}" fill="none" stroke-linecap="round"/>`;
+  for (let k = 0; k < lobes; k++){
+    const t = (k + .5) / lobes;
+    const env = Math.pow(Math.sin(Math.PI * Math.pow(t, 1.25)), .9);
+    const x = wid * env * .82, y = -t * len, y0 = -(t - .07) * len;
+    veins += `<path d="M0 ${f1(y0)} Q${f1(x * .5)} ${f1(y0 - len * .03)} ${f1(x)} ${f1(y)} M0 ${f1(y0 + len * .02)} Q${f1(-x * .5)} ${f1(y0 - len * .02)} ${f1(-x)} ${f1(y + len * .015)}" stroke="${vein}" stroke-width="${f1(len / 170)}" fill="none" opacity=".8"/>`;
+  }
+  return `<path d="M0 0 L0 7" stroke="${vein}" stroke-width="${f1(len / 70)}" stroke-linecap="round"/><path d="${oakLeafPath(len, wid)}" fill="${fill}"/>${veins}`;
+}
+function budShape(s, fill, line){
+  const w = s * .42;
+  let d = `<path d="M0 0 C${f1(w)} ${f1(-s * .2)} ${f1(w * .9)} ${f1(-s * .75)} 0 ${f1(-s)} C${f1(-w * .9)} ${f1(-s * .75)} ${f1(-w)} ${f1(-s * .2)} 0 0Z" fill="${fill}"/>`;
+  [[.22, .95], [.42, .9], [.62, .72], [.8, .45]].forEach(([y, k]) => {
+    d += `<path d="M${f1(-w * k)} ${f1(-s * y)} Q0 ${f1(-s * y + s * .13)} ${f1(w * k)} ${f1(-s * y)}" stroke="${line}" stroke-width="${f1(Math.max(.6, s / 28))}" fill="none"/>`;
+  });
+  return d;
+}
+function acornShape(s, ripe){
+  const nut = mix("#8fa650", "#8a5428", ripe), cup = mix("#76903f", "#9b8059", ripe), cupLine = mix("#5a7330", "#6f5a3c", ripe);
+  let scales = "";
+  for (let r = 0; r < 3; r++) for (let i = -2; i <= 2; i++){
+    const x = i * s * .17 + (r % 2) * s * .08, y = s * (.16 + r * .13);
+    scales += `<path d="M${f1(x - s * .07)} ${f1(y)} q${f1(s * .07)} ${f1(-s * .07)} ${f1(s * .14)} 0" stroke="${cupLine}" stroke-width="${f1(s / 40)}" fill="none"/>`;
+  }
+  return `<ellipse cx="0" cy="${f1(s * .78)}" rx="${f1(s * .36)}" ry="${f1(s * .58)}" fill="${nut}"/>
+    <path d="M0 ${f1(s * 1.36)} l0 ${f1(s * .07)}" stroke="#3b2a1a" stroke-width="${f1(s / 18)}" stroke-linecap="round"/>
+    <ellipse cx="${f1(-s * .12)}" cy="${f1(s * .7)}" rx="${f1(s * .07)}" ry="${f1(s * .25)}" fill="#fff" opacity=".22"/>
+    <path d="M${f1(-s * .44)} ${f1(s * .5)} Q${f1(-s * .5)} 0 0 0 Q${f1(s * .5)} 0 ${f1(s * .44)} ${f1(s * .5)} Q0 ${f1(s * .58)} ${f1(-s * .44)} ${f1(s * .5)}Z" fill="${cup}"/>
+    <g clip-path="none">${scales}</g>`;
+}
+function beads(x, y, dx, len, color, n){
+  let out = "";
+  for (let i = 0; i < n; i++){
+    const t = i / (n - 1);
+    out += `<circle cx="${f1(x + dx * t * t)}" cy="${f1(y + len * t)}" r="${f1(2.6 - t * .6)}" fill="${color}"/>`;
+  }
+  return out;
+}
+/* longitudinal section of a bud — reused by Buds and Flowers */
+function budSection(cx, baseY, H, W, opts = {}){
+  const ov = (h, w) => `M${cx} ${baseY} C${f1(cx + w)} ${f1(baseY - h * .2)} ${f1(cx + w * .9)} ${f1(baseY - h * .75)} ${cx} ${f1(baseY - h)} C${f1(cx - w * .9)} ${f1(baseY - h * .75)} ${f1(cx - w)} ${f1(baseY - h * .2)} ${cx} ${baseY}Z`;
+  const fills = ["#7d5233", "#946542", "#7d5233", "#a57650"];
+  let layers = "";
+  for (let k = 0; k < 4; k++) layers += `<path d="${ov(H * (1 - k * .08), W * (1 - k * .14))}" fill="${fills[k]}"/>`;
+  let out = "";
+  if (opts.open){
+    const id = "clip" + (++UID);
+    out += `<clipPath id="${id}"><rect x="${cx - W * 1.5}" y="${f1(baseY - H * .5)}" width="${W * 3}" height="${H}"/></clipPath><g clip-path="url(#${id})">${layers}</g>`;
+  } else out += layers;
+  const coreH = H * .62, coreW = W * .42;
+  out += `<path d="${ov(coreH, coreW)}" fill="#efe7cc"/>`;
+  out += `<path d="M${cx} ${baseY} L${cx} ${f1(baseY - coreH * .72)}" stroke="#d8c992" stroke-width="${f1(W * .22)}" stroke-linecap="round"/>`;
+  out += `<ellipse cx="${cx}" cy="${f1(baseY - coreH * .74)}" rx="${f1(W * .12)}" ry="${f1(W * .08)}" fill="#bccf74"/>`;
+  for (let i = 0; i < 4; i++){
+    const y = baseY - coreH * (.66 - i * .13), s = 1 + i * .45;
+    out += `<path d="M${f1(cx - 3)} ${f1(y)} q${f1(-7 * s)} ${f1(-2 * s)} ${f1(-6 * s)} ${f1(-10 * s)} M${f1(cx + 3)} ${f1(y)} q${f1(7 * s)} ${f1(-2 * s)} ${f1(6 * s)} ${f1(-10 * s)}" stroke="#93ad55" stroke-width="${f1(2 + i * .6)}" fill="none" stroke-linecap="round"/>`;
+  }
+  if (opts.catkins){
+    [-1, 1].forEach(sd => { out += beads(cx + sd * W * .2, baseY - coreH * .33, sd * 6, 16, "#d9c35a", 5); });
+  }
+  if (opts.open){
+    out += `<g transform="translate(${cx - 4} ${f1(baseY - H * .45)}) rotate(-12)">${oakLeaf(H * .55, H * .14, "#a9b85a")}</g>`;
+    out += `<g transform="translate(${cx + 4} ${f1(baseY - H * .45)}) rotate(14)">${oakLeaf(H * .5, H * .13, "#b1a85a")}</g>`;
+  }
+  return out;
+}
+function frost(rng, x0, y0, w, h, n){
+  let o = "";
+  for (let i = 0; i < n; i++){
+    const x = x0 + rng() * w, y = y0 + rng() * h, s = 1.5 + rng() * 2;
+    o += `<path d="M${f1(x - s)} ${f1(y)}h${f1(2 * s)}M${f1(x)} ${f1(y - s)}v${f1(2 * s)}" stroke="#ffffff" stroke-width=".9" opacity=".9"/>`;
+  }
+  return o;
+}
+const VB = `viewBox="0 0 360 220"`;
+
+/* ---------- LEAVES ---------- */
+App.registerTopic({
+  id: "leaves", glyph: "leaf", zoom: 520, pull: .25,
+  illustrate(ctx){
+    const s = ctx.season, rng = ctx.rng;
+    let b = "";
+    const MX = 262, MY = 110, MR = 88;
+    if (s === "spring" || s === "summer"){
+      const col = s === "spring" ? mix("#9bb24f", ctx.ph.leafColor, .4) : ctx.ph.leafColor;
+      b += `<g transform="translate(84 206) rotate(-8)">${oakLeaf(178, 46, col)}${s === "spring" ? `<path d="${oakLeafPath(178, 46)}" fill="#b44a3a" opacity=".16"/>` : ""}</g>`;
+      b += loupe(118, 108, MX, MY, MR);
+      /* cross-section */
+      let x = "";
+      const top = 52;
+      x += `<rect x="150" y="${top}" width="230" height="5" fill="#e1d58f"/>`;
+      for (let i = 0; i < 16; i++) x += `<rect x="${170 + i * 12}" y="${top + 5}" width="11.5" height="11" rx="2" fill="${s === "spring" ? "#f0d9d0" : "#eef2e2"}" stroke="#a6ae94" stroke-width=".6"/>`;
+      const chl = s === "spring" ? "#7fa83d" : "#3f7a2f";
+      for (let i = 0; i < 20; i++){
+        const cx0 = 172 + i * 9.5;
+        x += `<rect x="${cx0}" y="${top + 17}" width="8.5" height="40" rx="3.5" fill="#cfe2a8" stroke="#8fae68" stroke-width=".6"/>`;
+        for (let k = 0; k < 4; k++) x += `<circle cx="${f1(cx0 + 2.5 + (k % 2) * 3.5)}" cy="${f1(top + 23 + k * 9)}" r="1.7" fill="${chl}"/>`;
+      }
+      for (let i = 0; i < 22; i++){
+        const cx0 = 172 + rng() * 185, cy0 = top + 66 + rng() * 32;
+        x += `<circle cx="${f1(cx0)}" cy="${f1(cy0)}" r="${f1(5 + rng() * 3)}" fill="#dcebc0" stroke="#9fbb78" stroke-width=".6"/><circle cx="${f1(cx0 + 1)}" cy="${f1(cy0)}" r="1.4" fill="${chl}"/>`;
+      }
+      x += `<circle cx="238" cy="${top + 84}" r="14" fill="#e9e3c3" stroke="#a69a63"/><circle cx="234" cy="${top + 80}" r="3" fill="#7b8fb0"/><circle cx="242" cy="${top + 82}" r="2.6" fill="#7b8fb0"/><circle cx="238" cy="${top + 90}" r="3.2" fill="#c7a76a"/>`;
+      for (let i = 0; i < 16; i++){ if (i === 7 || i === 8) continue; x += `<rect x="${170 + i * 12}" y="${top + 106}" width="11.5" height="10" rx="2" fill="#eef2e2" stroke="#a6ae94" stroke-width=".6"/>`; }
+      x += `<ellipse cx="260" cy="${top + 111}" rx="5" ry="6" fill="#bcd48a" stroke="#7d9a50" stroke-width=".7"/><ellipse cx="276" cy="${top + 111}" rx="5" ry="6" fill="#bcd48a" stroke="#7d9a50" stroke-width=".7"/>`;
+      x += `<rect x="150" y="${top + 116}" width="230" height="4" fill="#e1d58f"/>`;
+      b += magnifier(MX, MY, MR, x);
+      ctx.mark(60, 110, ["Leaf blade", "Leaf blade", "Lobed leaf blade", "Lamina"]);
+      ctx.mark(84, 150, ["Vein", "Midrib", "Midrib", "Midrib (primary vein)"], 0);
+      if (s === "spring") ctx.mark(108, 70, ["Red tint in new leaves", "Anthocyanin “sunscreen”"], 1);
+      ctx.mark(205, top + 3, "Waxy cuticle", 2);
+      ctx.mark(200, top + 38, ["Food-making cells", "Palisade layer", "Palisade mesophyll", "Palisade mesophyll (Rubisco-rich)"]);
+      ctx.mark(300, top + 78, ["", "Spongy layer", "Spongy mesophyll and air spaces"], 1);
+      ctx.mark(238, top + 84, ["", "", "Vein: xylem and phloem", "Vascular bundle and bundle sheath"], 2);
+      ctx.mark(268, top + 128, ["Breathing pore", "Stoma", "Stoma", "Stoma flanked by guard cells"]);
+    } else if (s === "autumn"){
+      const col = ctx.ph.leafColor;
+      b += `<path d="M12 30 C60 22 110 26 172 18" class="twig" stroke-width="5"/>`;
+      b += `<g transform="translate(82 26) rotate(172)">${oakLeaf(160, 44, col)}</g>`;
+      b += loupe(82, 30, MX, MY, MR);
+      let x = "";
+      x += `<rect x="160" y="80" width="210" height="60" fill="${mix(col, "#ffffff", .25)}"/>`;
+      x += `<rect x="296" y="20" width="80" height="190" fill="#8a6a4b"/><rect x="296" y="20" width="6" height="190" fill="#6c5139"/>`;
+      for (let r = 0; r < 6; r++) for (let c = 0; c < 3; c++) x += `<rect x="${274 + c * 7}" y="${82 + r * 9.6}" width="6.4" height="8.8" rx="1.5" fill="${ctx.season === "autumn" ? "#e7b46b" : "#ddd"}" stroke="#b0773b" stroke-width=".5"/>`;
+      x += `<rect x="268" y="80" width="5" height="60" fill="#6f5a45"/>`;
+      x += `<path d="M160 110 C220 108 260 112 330 108" stroke="#5e7f8f" stroke-width="5" fill="none" opacity=".7"/>`;
+      b += magnifier(MX, MY, MR, x);
+      ctx.mark(100, 120, ["Leaf turning brown", "Chlorophyll broken down", "Senescing leaf", "Senescing leaf (PAO pathway active)"]);
+      ctx.mark(205, 95, ["Leaf stalk", "Leaf stalk (petiole)", "Petiole"]);
+      ctx.mark(283, 76, ["Breaking point", "Abscission zone", "Abscission (separation) layer"]);
+      ctx.mark(262, 150, ["", "Protective cork layer", "Protective periderm layer"], 1);
+      ctx.mark(330, 120, ["", "", "Vascular trace into stem", "Vascular trace (sealed by tyloses/gums)"], 2);
+      ctx.mark(320, 60, ["Twig"]);
+    } else {
+      b += `<path d="M22 210 C50 160 92 120 150 30" class="twig" stroke-width="5"/>`;
+      b += `<g transform="translate(150 30) rotate(30)">${budShape(16, "#8b5e3c", "#5e3d26")}</g><g transform="translate(150 30) rotate(-8)">${budShape(13, "#93653f", "#5e3d26")}</g><g transform="translate(150 30) rotate(70)">${budShape(12, "#8b5e3c", "#5e3d26")}</g>`;
+      b += `<g transform="translate(95 112) rotate(150) scale(.92 1)">${oakLeaf(110, 30, "#9b6b3e", { vein: "#6e4726" })}</g>`;
+      b += `<path d="M66 154 q6 6 12 0" stroke="#5e3d26" stroke-width="2" fill="none"/>`;
+      b += loupe(196, 170, MX, MY, MR);
+      let x = `<rect x="150" y="20" width="230" height="190" fill="#6b5340"/>`;
+      for (let i = 0; i < 14; i++){
+        const cx0 = 180 + rng() * 170, cy0 = 40 + rng() * 150, r = 10 + rng() * 14;
+        x += `<path d="M${f1(cx0 - r)} ${f1(cy0)} Q${f1(cx0)} ${f1(cy0 - r * .9)} ${f1(cx0 + r)} ${f1(cy0 + rng() * 6)} Q${f1(cx0)} ${f1(cy0 + r * .6)} ${f1(cx0 - r)} ${f1(cy0)}Z" fill="${["#9b6b3e","#8a5a33","#b07a45","#7a5a3e"][i % 4]}" opacity=".95"/>`;
+      }
+      for (let i = 0; i < 18; i++){
+        const x0 = 175 + rng() * 180, y0 = 30 + rng() * 170;
+        x += `<path d="M${f1(x0)} ${f1(y0)} q${f1(10 + rng() * 15)} ${f1(-10 + rng() * 20)} ${f1(25 + rng() * 20)} ${f1(-5 + rng() * 10)}" stroke="#f6f1e2" stroke-width=".9" fill="none" opacity=".85"/>`;
+      }
+      x += `<ellipse cx="300" cy="150" rx="5" ry="2.6" fill="#e9e1cf"/><ellipse cx="236" cy="70" rx="3.6" ry="2" fill="#e9e1cf"/>`;
+      b += magnifier(MX, MY, MR, x);
+      ctx.mark(110, 150, ["Dead leaf still attached", "Marcescent leaf", "Marcescent leaf (incomplete abscission)"]);
+      ctx.mark(150, 14, "Winter buds", 1);
+      ctx.mark(72, 168, "Leaf scar", 2);
+      ctx.mark(214, 120, ["Fallen leaves rotting", "Leaf litter", "Leaf litter (high lignin and tannins)"]);
+      ctx.mark(286, 66, ["Fungal threads", "Fungal hyphae", "Saprotrophic and EM hyphae"]);
+      ctx.mark(300, 150, ["Tiny soil animals", "Springtails and mites", "Soil mesofauna"], 1);
+    }
+    return b;
+  }
+});
+
+/* ---------- BUDS ---------- */
+App.registerTopic({
+  id: "buds", glyph: "bud", zoom: 480, pull: .25,
+  illustrate(ctx){
+    const s = ctx.season, rng = ctx.rng;
+    const MX = 262, MY = 110, MR = 88;
+    const twigCol = s === "summer" ? "#7d6b44" : null;
+    let b = `<path d="M24 212 C56 160 92 128 132 66" class="twig" stroke-width="6" ${twigCol ? `style="stroke:${twigCol}"` : ""}/>`;
+    const bc = s === "summer" ? "#a89155" : "#8b5e3c", bl = s === "summer" ? "#76653a" : "#5b3b24";
+    [[60, 158, 28, 18], [92, 118, 26, 19]].forEach(([x, y, a, sz]) => {
+      b += `<path d="M${x - 5} ${y + 6} q5 4 10 0" stroke="#5b3b24" stroke-width="1.6" fill="none"/>`;
+      if (s !== "spring") b += `<g transform="translate(${x} ${y}) rotate(${a})">${budShape(sz, bc, bl)}</g>`;
+    });
+    if (s === "spring"){
+      b += `<path d="M132 66 C136 50 142 40 150 22" stroke="#7e9a4a" stroke-width="3.4" fill="none" stroke-linecap="round"/>`;
+      [[-44, 52, .9], [36, 46, .8], [-6, 38, .7]].forEach(([a, L, k], i) => {
+        b += `<g transform="translate(${140 + i * 3} ${62 - i * 11}) rotate(${a})">${oakLeaf(L, L * .28, mix("#a9b85a", "#b8604a", .18 * k))}</g>`;
+      });
+      for (let i = 0; i < 6; i++){
+        const a = -140 + i * 50;
+        b += `<path d="M132 66 l${f1(Math.cos(a * Math.PI / 180) * 9)} ${f1(Math.sin(a * Math.PI / 180) * 9)}" stroke="#8b5e3c" stroke-width="4" stroke-linecap="round"/>`;
+      }
+      b += beads(126, 70, -6, 34, "#c9b24c", 8) + beads(118, 74, -2, 30, "#c9b24c", 7);
+    } else {
+      [[-30, 28], [8, 34], [42, 25], [-64, 21]].forEach(([a, sz]) => {
+        b += `<g transform="translate(132 66) rotate(${a})">${budShape(sz, bc, bl)}</g>`;
+      });
+    }
+    if (s === "summer"){
+      b += `<path d="M92 118 C100 102 106 96 116 90" stroke="#a5604a" stroke-width="2.4" fill="none"/>`;
+      b += `<g transform="translate(116 92) rotate(50)">${oakLeaf(30, 9, "#b0724f")}</g><g transform="translate(108 98) rotate(-20)">${oakLeaf(26, 8, "#a87a50")}</g>`;
+      b += `<g transform="translate(60 160) rotate(118)">${oakLeaf(70, 20, ctx.ph.leafColor)}</g>`;
+    }
+    if (s === "autumn") b += `<g transform="translate(60 160) rotate(122)">${oakLeaf(70, 20, ctx.ph.leafColor)}</g>`;
+    if (s === "winter") b += frost(rng, 30, 20, 140, 190, 16);
+    b += loupe(132, 50, MX, MY, MR);
+    const inner = `<rect x="150" y="0" width="240" height="230" fill="${s === "winter" ? "#e4ebee" : "#eef0e6"}"/>` +
+      budSection(MX, 192, 170, 50, { open: s === "spring" }) + (s === "winter" ? frost(rng, 180, 30, 170, 160, 12) : "");
+    b += magnifier(MX, MY, MR, inner);
+
+    if (s === "spring"){
+      ctx.mark(156, 46, ["New leaves unfolding", "Expanding preformed leaves", "Expanding preformed shoot", "Preformed shoot (flush 1)"]);
+      ctx.mark(118, 74, ["Bud scales falling off", "Bud scales opening", "Bud-scale abscission"], 1);
+      ctx.mark(106, 100, ["Catkins", "Male catkins on the new shoot"], 0);
+      ctx.mark(262, 100, ["Leaves growing inside", "Shoot expanding from the bud", "Internode elongation"], 0);
+    } else {
+      ctx.mark(156, 52, ["Bud cluster at the tip", "Clustered terminal buds"]);
+      ctx.mark(72, 165, ["", "Leaf scar", "Leaf scar with bundle traces"], 1);
+      if (s === "summer") ctx.mark(118, 86, ["", "", "Lammas shoot", "Lammas shoot (precocious bud break)"], 2);
+      ctx.mark(MX - 27, 112, ["Protective scales", "Overlapping bud scales", "Bud scales (cataphylls)"]);
+      ctx.mark(MX + 26, 120, ["Tiny folded leaves", "Next year’s leaves", "Leaf primordia", "Leaf primordia (heteroblastic series)"]);
+      ctx.mark(MX, 72, ["", "Growing point", "Apical meristem", s === "summer" ? "Shoot apical meristem (active)" : "Shoot apical meristem (symplastically isolated)"], 1);
+      if (s === "winter") ctx.mark(200, 50, ["Frost", "Frost: the bud is collecting chill", "Chilling accumulation", "Chill units accrue (endo → ecodormancy)"], 0);
+    }
+    return b;
+  }
+});
+
+/* ---------- FLOWERS ---------- */
+App.registerTopic({
+  id: "flowers", glyph: "catkin", zoom: 520, pull: .25,
+  illustrate(ctx){
+    const s = ctx.season, rng = ctx.rng;
+    const MX = 262, MY = 110, MR = 88;
+    let b = "";
+    if (s === "spring" || s === "summer"){
+      b += `<path d="M84 218 C90 160 96 100 112 34" stroke="#7e9a4a" stroke-width="3.6" fill="none" stroke-linecap="round"/>`;
+      b += `<g transform="translate(96 120) rotate(-62)">${oakLeaf(70, 20, s === "spring" ? "#9db552" : ctx.ph.leafColor)}</g>`;
+      b += `<g transform="translate(104 78) rotate(${s === "spring" ? 58 : 120})">${oakLeaf(62, 18, s === "spring" ? "#a6b456" : ctx.ph.leafColor)}</g>`;
+      if (s === "spring"){
+        b += beads(93, 132, -10, 64, "#c9b24c", 14) + beads(95, 134, 8, 56, "#cdb854", 12) + beads(92, 136, -24, 46, "#c2aa48", 10);
+        b += `<path d="M112 36 C120 28 130 26 142 26" stroke="#7e9a4a" stroke-width="1.8" fill="none"/>`;
+        [[132, 24], [143, 25]].forEach(([x, y]) => {
+          b += `<circle cx="${x}" cy="${y}" r="5.4" fill="#8faa50"/><path d="M${x - 3} ${y - 4} l-2 -5 M${x} ${y - 5} l0 -6 M${x + 3} ${y - 4} l2 -5" stroke="#b5384b" stroke-width="2.2" stroke-linecap="round"/>`;
+        });
+        b += loupe(136, 24, MX, MY, MR);
+        let x = `<rect x="150" y="0" width="240" height="230" fill="#eef0e6"/><line x1="170" y1="112" x2="356" y2="112" stroke="var(--line-strong)" stroke-dasharray="3 3"/>`;
+        x += `<path d="M238 84 Q262 104 286 84 Q262 92 238 84Z" fill="#9fb35a"/>`;
+        for (let i = 0; i < 7; i++){
+          const a = -150 + i * 20, rad = a * Math.PI / 180, L = 28 + (i % 2) * 6;
+          const ex = 262 + Math.cos(rad) * L, ey = 86 + Math.sin(rad) * L;
+          x += `<line x1="262" y1="86" x2="${f1(ex)}" y2="${f1(ey)}" stroke="#c9c28a" stroke-width="1.4"/><ellipse cx="${f1(ex)}" cy="${f1(ey)}" rx="3.6" ry="5" transform="rotate(${a + 90} ${f1(ex)} ${f1(ey)})" fill="#e3c442"/>`;
+        }
+        for (let i = 0; i < 14; i++) x += `<circle cx="${f1(292 + rng() * 50)}" cy="${f1(30 + rng() * 50)}" r="1.6" fill="#d9b93a"/>`;
+        x += `<path d="M236 190 Q236 152 262 150 Q288 152 288 190Z" fill="#9aae58"/>`;
+        for (let r = 0; r < 3; r++) for (let i = 0; i < 5; i++) x += `<path d="M${240 + i * 10 + (r % 2) * 5} ${186 - r * 11} q4 -5 8 0" stroke="#6f863a" stroke-width="1" fill="none"/>`;
+        x += `<ellipse cx="262" cy="150" rx="12" ry="10" fill="#c7d68e"/>`;
+        [-1, 0, 1].forEach(k => { x += `<path d="M${262 + k * 5} 142 q${k * 8} -14 ${k * 14 + (k === 0 ? 2 : 0)} -22" stroke="#b5384b" stroke-width="4" fill="none" stroke-linecap="round"/>`; });
+        b += magnifier(MX, MY, MR, x);
+        ctx.mark(70, 176, ["Male catkins (pollen)", "Male catkins", "Staminate catkins", "Staminate inflorescences (anemophilous)"]);
+        ctx.mark(150, 12, ["Female flowers", "Female flowers", "Pistillate flowers on a peduncle"]);
+        ctx.mark(220, 60, ["", "Stamens", "Stamens with anthers"], 1);
+        ctx.mark(320, 40, ["Pollen on the wind", "Pollen grains", "Wind-borne pollen", "Tricolporate pollen"]);
+        ctx.mark(282, 128, ["Sticky tips catch pollen", "Stigmas", "Three stigmas", "Trifid stigma"]);
+        ctx.mark(244, 176, ["", "", "Cupule bracts", "Cupule (homology debated)"], 2);
+      } else {
+        b += `<path d="M93 132 q-2 20 -10 34" stroke="#9a7d4c" stroke-width="2.5" fill="none" stroke-dasharray="1 3" stroke-linecap="round"/>`;
+        b += `<path d="M112 36 C126 28 146 32 154 46" stroke="#7e9a4a" stroke-width="2" fill="none"/>`;
+        b += `<g transform="translate(154 46) rotate(-6)">${acornShape(24, 0)}</g><g transform="translate(146 42) rotate(22)">${acornShape(20, 0)}</g>`;
+        b += loupe(154, 66, MX, MY, MR);
+        let x = `<rect x="150" y="0" width="240" height="230" fill="#eef0e6"/><circle cx="262" cy="110" r="64" fill="#c9d79a"/><circle cx="262" cy="110" r="58" fill="#e4ebc6"/>`;
+        [-90, 30, 150].forEach(a => { const r = a * Math.PI / 180; x += `<line x1="262" y1="110" x2="${f1(262 + Math.cos(r) * 58)}" y2="${f1(110 + Math.sin(r) * 58)}" stroke="#a9bb72" stroke-width="3"/>`; });
+        [[-30, false], [-60, false], [90, true], [70, false], [190, false], [220, false]].forEach(([a, big], i) => {
+          const r = a * Math.PI / 180, d = big ? 30 : 22, cx0 = 262 + Math.cos(r) * d, cy0 = 110 + Math.sin(r) * d;
+          x += big ? `<ellipse cx="${f1(cx0)}" cy="${f1(cy0)}" rx="15" ry="20" fill="#f5eccb" stroke="#b39a52" stroke-width="1.2"/><ellipse cx="${f1(cx0)}" cy="${f1(cy0 - 3)}" rx="5" ry="8" fill="#e2cf86"/>`
+                   : `<ellipse cx="${f1(cx0)}" cy="${f1(cy0)}" rx="5" ry="7" fill="#d9d6b0" stroke="#a9a072" stroke-width=".8"/>`;
+        });
+        b += magnifier(MX, MY, MR, x);
+        ctx.mark(130, 70, ["Baby acorns", "Young acorns", "Developing fruits"]);
+        ctx.mark(72, 160, ["Old catkin", "Spent catkin"], 0);
+        ctx.mark(330, 70, ["", "Inside the young acorn", "Ovary: three chambers", "Tricarpellate ovary"], 1);
+        ctx.mark(262, 168, ["", "Growing seed", "The one ovule that develops", "Dominant ovule (selective abortion?)"], 1);
+        ctx.mark(226, 76, ["", "", "Ovules that will abort", "Aborting ovules"], 2);
+      }
+    } else {
+      b += `<path d="M24 212 C56 160 92 128 132 66" class="twig" stroke-width="6"/>`;
+      [[-30, 28], [8, 34], [42, 25], [-64, 21]].forEach(([a, sz]) => { b += `<g transform="translate(132 66) rotate(${a})">${budShape(sz, "#8b5e3c", "#5b3b24")}</g>`; });
+      b += `<g transform="translate(92 118) rotate(26)">${budShape(19, "#8b5e3c", "#5b3b24")}</g>`;
+      if (s === "autumn") b += `<g transform="translate(60 160) rotate(122)">${oakLeaf(70, 20, ctx.ph.leafColor)}</g>`;
+      else b += frost(rng, 30, 20, 140, 190, 14);
+      b += loupe(132, 50, MX, MY, MR);
+      b += magnifier(MX, MY, MR, `<rect x="150" y="0" width="240" height="230" fill="#eef0e6"/>` + budSection(MX, 192, 170, 50, { catkins: true }));
+      ctx.mark(156, 52, ["Flowers hidden in buds", "Mixed buds"]);
+      ctx.mark(MX - 26, 152, ["Tiny catkin", "Future catkin", "Catkin primordium", "Staminate primordium (pre-meiotic)"]);
+      ctx.mark(MX + 28, 118, ["", "Next year’s leaves", "Leaf primordia"], 1);
+      ctx.mark(MX - 27, 112, ["", "Bud scales"], 1);
+    }
+    return b;
+  }
+});
+
+/* ---------- ACORNS ---------- */
+App.registerTopic({
+  id: "acorns", glyph: "acorn", zoom: 480, pull: .2,
+  illustrate(ctx){
+    const s = ctx.season, rng = ctx.rng;
+    const MX = 262, MY = 110, MR = 88;
+    const ripe = s === "summer" ? 0 : 1;
+    let b = "";
+    if (s === "summer"){
+      b += `<path d="M6 30 C60 22 120 28 172 18" class="twig" stroke-width="5"/>`;
+      b += `<g transform="translate(40 28) rotate(160)">${oakLeaf(90, 26, ctx.ph.leafColor)}</g>`;
+      b += `<path d="M100 26 C102 50 104 70 108 92 M108 92 C100 100 90 104 78 106" stroke="#7e8a4a" stroke-width="2.2" fill="none"/>`;
+      b += `<g transform="translate(110 92) rotate(-6)">${acornShape(40, 0)}</g><g transform="translate(76 104) rotate(18)">${acornShape(36, 0)}</g>`;
+      b += loupe(116, 132, MX, MY, MR);
+      ctx.mark(76, 150, ["Green acorn", "Unripe acorn", "Developing nut (pericarp hardening)"]);
+      ctx.mark(124, 100, ["Cup", "Cup (cupule)", "Cupule"]);
+      ctx.mark(98, 50, ["Long stalk", "Long stalk (peduncle)", "Peduncle", "Peduncle (Q. robur diagnostic)"]);
+    } else if (s === "autumn"){
+      b += `<path d="M6 30 C60 22 120 28 172 18" class="twig" stroke-width="5"/>`;
+      b += `<path d="M110 25 C112 40 114 50 116 62" stroke="#8a7350" stroke-width="2" fill="none"/>`;
+      b += `<g transform="translate(116 62)">${acornShape(34, 1)}</g>`;
+      b += `<g transform="translate(60 92) rotate(28)">${acornShape(30, 1)}</g><path d="M46 70 l-6 -10 M54 66 l-4 -12" stroke="var(--line-strong)" stroke-width="1.5" stroke-linecap="round"/>`;
+      b += `<path d="M0 192 C40 188 120 194 175 190 L175 220 L0 220Z" fill="#8a6a4a"/>`;
+      for (let i = 0; i < 9; i++) b += `<ellipse cx="${f1(10 + rng() * 160)}" cy="${f1(192 + rng() * 8)}" rx="${f1(7 + rng() * 6)}" ry="2.4" fill="${["#b07a45","#9b6b3e","#c28a2c"][i % 3]}"/>`;
+      b += `<g transform="translate(40 188) rotate(-84)">${acornShape(22, 1)}</g><g transform="translate(130 186) rotate(96)">${acornShape(20, 1)}</g>`;
+      b += `<path d="M96 192 Q96 182 106 182 Q116 182 116 192Z" fill="#9b8059"/>`;
+      b += loupe(126, 96, MX, MY, MR);
+      ctx.mark(136, 92, ["Ripe acorn", "Ripe acorn", "Mature acorn (recalcitrant seed)"]);
+      ctx.mark(46, 112, ["Falling to the ground", "Shed acorn"]);
+      ctx.mark(106, 172, ["", "Empty cup", "Empty cupule"], 1);
+      ctx.mark(30, 176, ["Food for jays and mice", "Acorns jays will cache", "Cache-able seeds (scatter-hoarding)"]);
+    } else if (s === "winter"){
+      b += `<path d="M0 62 C40 56 120 64 175 58 L175 220 L0 220Z" fill="#8f765b"/><path d="M0 62 C40 56 120 64 175 58 L175 70 C120 76 40 68 0 74Z" fill="#6f5a45"/>`;
+      b += `<path d="M0 60 C30 48 70 52 100 50 C130 48 160 52 175 54 L175 64 C120 68 40 62 0 66Z" fill="#f7faf9" stroke="var(--line)" stroke-width=".5"/>`;
+      b += `<g transform="translate(70 80) rotate(-70)">${acornShape(34, 1)}</g>`;
+      b += `<path d="M112 92 C126 110 130 140 124 170 C120 190 126 204 130 214" stroke="#efe6cf" stroke-width="4" fill="none" stroke-linecap="round"/>`;
+      b += loupe(96, 86, MX, MY, MR);
+      ctx.mark(70, 100, ["Buried acorn", "Acorn under the litter", "Overwintering acorn"]);
+      ctx.mark(130, 150, ["First root", "First root (radicle)", "Radicle", "Radicle (no dormancy, sect. Quercus)"]);
+      ctx.mark(140, 46, ["Snow blanket", "Snow insulates the soil"], 0);
+      ctx.mark(102, 76, ["", "", "Shoot waits for spring", "Dormant epicotyl"], 2);
+    } else {
+      b += `<path d="M0 108 C40 104 120 110 175 106 L175 220 L0 220Z" fill="#8f765b"/><path d="M0 108 C40 104 120 110 175 106 L175 116 C120 120 40 114 0 118Z" fill="#6f5a45"/>`;
+      b += `<g transform="translate(74 128) rotate(-64)">${acornShape(30, 1)}</g>`;
+      b += `<path d="M98 140 C104 160 100 186 104 218 M102 168 l18 10 M101 188 l-16 12" stroke="#efe6cf" stroke-width="3.4" fill="none" stroke-linecap="round"/>`;
+      b += `<path d="M96 132 C100 110 98 70 102 40" stroke="#8a6a4a" stroke-width="3" fill="none"/>`;
+      b += `<g transform="translate(102 42) rotate(-24)">${oakLeaf(36, 11, "#9cb553")}</g><g transform="translate(102 44) rotate(30)">${oakLeaf(32, 10, "#a2b85a")}</g><g transform="translate(100 68) rotate(-60)">${oakLeaf(26, 8, "#93ab4e")}</g>`;
+      b += loupe(84, 132, MX, MY, MR);
+      ctx.mark(122, 34, ["Seedling", "Seedling shoot", "Epicotyl and first leaves"]);
+      ctx.mark(58, 150, ["Acorn stays underground", "Acorn stays below ground (hypogeal)", "Hypogeal germination"]);
+      ctx.mark(118, 200, ["Deep root", "Taproot"], 0);
+    }
+    /* acorn longitudinal section */
+    const shell = ripe ? "#8a5428" : "#8fa650";
+    let x = `<rect x="150" y="0" width="240" height="230" fill="#eef0e6"/>`;
+    x += `<ellipse cx="262" cy="118" rx="44" ry="66" fill="${shell}"/><ellipse cx="262" cy="118" rx="38" ry="60" fill="#d8c79a"/>`;
+    x += `<path d="M262 60 C230 64 226 120 236 160 C244 176 256 178 262 176Z" fill="#f2e8c8"/><path d="M262 60 C294 64 298 120 288 160 C280 176 268 178 262 176Z" fill="#ece0bb"/>`;
+    x += `<line x1="262" y1="62" x2="262" y2="176" stroke="#c9b882" stroke-width="1.2"/>`;
+    x += `<ellipse cx="262" cy="170" rx="5" ry="9" fill="#d9c56c"/>`;
+    if (ctx.li >= 2) for (let i = 0; i < 40; i++){ const a = rng() * Math.PI * 2, r = rng(); x += `<circle cx="${f1(262 + Math.cos(a) * 26 * r)}" cy="${f1(116 + Math.sin(a) * 44 * r)}" r="1.1" fill="#cbbb8a"/>`; }
+    const cupC = mix("#76903f", "#9b8059", ripe), cupL = mix("#5a7330", "#6f5a3c", ripe);
+    x += `<path d="M262 0 L262 34" stroke="#7d6a48" stroke-width="5"/><path d="M216 86 C212 58 232 40 262 40 C292 40 312 58 308 86 Q262 96 216 86Z" fill="${cupC}"/>`;
+    for (let r = 0; r < 4; r++) for (let i = -3; i <= 3; i++) x += `<path d="M${f1(248 + i * 13 + (r % 2) * 6)} ${f1(54 + r * 9)} q6 -6 12 0" stroke="${cupL}" stroke-width="1.2" fill="none"/>`;
+    if (s === "winter" || s === "spring") x += `<path d="M262 184 C262 200 268 214 266 236" stroke="#efe6cf" stroke-width="7" fill="none" stroke-linecap="round"/>`;
+    b += magnifier(MX, MY, MR, x);
+    ctx.mark(304, 140, ["Shell", "Shell (pericarp)", "Pericarp"]);
+    ctx.mark(240, 112, ["Stored food", "Seed leaves full of starch", "Cotyledons (starch store)", "Cotyledons (exalbuminous seed)"]);
+    ctx.mark(278, 172, ["", "Baby plant (embryo)", "Embryonic axis", "Embryonic axis (radicle–epicotyl)"], 1);
+    return b;
+  }
+});
+
+/* ---------- WOOD ---------- */
+App.registerTopic({
+  id: "wood", glyph: "rings", zoom: 520,
+  illustrate(ctx){
+    const s = ctx.season, rng = ctx.rng;
+    const C = [180, 404], A1 = -118, A2 = -62;
+    const pol = (r, a) => [C[0] + r * Math.cos(a * Math.PI / 180), C[1] + r * Math.sin(a * Math.PI / 180)];
+    const P = (r, a) => pol(r, a).map(f1).join(" ");
+    const sector = (r1, r2, a1 = A1, a2 = A2) => `M${P(r2, a1)} A${r2} ${r2} 0 0 1 ${P(r2, a2)} L${P(r1, a2)} A${r1} ${r1} 0 0 0 ${P(r1, a1)}Z`;
+    const prog = { spring: .35, summer: .72, autumn: 1, winter: 1 }[s];
+    const RW = 22, R0 = 186, NR = 7, CAMB = R0 + RW * NR;
+    let b = "";
+    for (let i = 0; i < NR; i++){
+      const r0 = R0 + i * RW, heart = i < 3, cur = i === NR - 1;
+      const ew = heart ? "#cfa46c" : "#ead9b4", lw = heart ? "#a87a45" : "#c9a674";
+      const width = cur ? RW * prog : RW;
+      b += `<path d="${sector(r0, r0 + Math.min(width, 8))}" fill="${ew}"/>`;
+      if (width > 8) b += `<path d="${sector(r0 + 8, r0 + width)}" fill="${lw}"/>`;
+      /* earlywood vessels */
+      const step = 9 / (r0 + 4) * 180 / Math.PI;
+      for (let a = A1 + step * .6; a < A2 - step * .3; a += step){
+        const [x, y] = pol(r0 + 4 + (rng() - .5) * 2, a + (rng() - .5) * step * .4);
+        let fill = "#2f2924";
+        if (cur && s !== "winter") fill = "#6f97b3";
+        if (heart) fill = "#9b7444";
+        b += `<circle cx="${f1(x)}" cy="${f1(y)}" r="${f1(2.6 + rng() * .8)}" fill="${fill}"/>`;
+        if (heart) b += `<circle cx="${f1(x - .6)}" cy="${f1(y - .4)}" r=".9" fill="#d8b783"/><circle cx="${f1(x + .8)}" cy="${f1(y + .6)}" r=".8" fill="#d8b783"/>`;
+      }
+      if (width > 12){
+        const st = 13 / (r0 + 15) * 180 / Math.PI;
+        for (let a = A1 + st * .5; a < A2; a += st){ const [x, y] = pol(r0 + 11 + rng() * Math.max(1, width - 13), a); b += `<circle cx="${f1(x)}" cy="${f1(y)}" r=".9" fill="${cur && s !== "winter" ? "#6f97b3" : "#5a4a3a"}"/>`; }
+      }
+    }
+    if (prog < 1) b += `<path d="${sector(R0 + (NR - 1) * RW + RW * prog, CAMB)}" fill="#f3ebd6"/>`;
+    for (let a = A1 + 2; a < A2; a += 3.4){
+      const broad = Math.round((a - A1) / 3.4) % 5 === 2;
+      b += `<path d="M${P(R0, a)} L${P(CAMB, a)}" stroke="${broad ? "#e9d6ae" : "#b5915f"}" stroke-width="${broad ? 2.4 : .5}" opacity="${broad ? .9 : .7}"/>`;
+    }
+    const active = s === "spring" || s === "summer";
+    b += `<path d="${sector(CAMB, CAMB + 2.5)}" fill="${active ? ctx.ph.accent : "#9a9a8a"}"/>`;
+    b += `<path d="${sector(CAMB + 2.5, CAMB + 8)}" fill="#b58a5c"/>`;
+    let bark = `M${P(CAMB + 8, A1)}`;
+    for (let a = A1; a <= A2 + .01; a += 1.2){ const r = CAMB + 34 + (Math.round(a) % 4 === 0 ? -14 : rng() * 7); bark += ` L${P(r, a)}`; }
+    bark += ` L${P(CAMB + 8, A2)} A${CAMB + 8} ${CAMB + 8} 0 0 0 ${P(CAMB + 8, A1)}Z`;
+    b += `<path d="${bark}" fill="#5c4736"/>`;
+    for (let a = A1 + 3; a < A2; a += 5) b += `<path d="M${P(CAMB + 12, a)} L${P(CAMB + 26, a + 1)}" stroke="#3f3026" stroke-width="1"/>`;
+
+    const m = (r, a, t, min) => { const [x, y] = pol(r, a); ctx.mark(x, y, t, min); };
+    m(CAMB + 24, -112, ["Bark", "Outer bark", "Outer bark (rhytidome)"]);
+    m(CAMB + 1, -66, [active ? "Growth layer (active)" : "Growth layer (resting)", active ? "Cambium (active)" : "Cambium (dormant)", active ? "Vascular cambium (active)" : "Vascular cambium (dormant)"]);
+    m(CAMB + 5, -96, ["", "Phloem (inner bark)", "Secondary phloem"], 1);
+    m(R0 + (NR - 1) * RW + 4, -84, s === "winter"
+      ? ["Big tubes, now air-filled", "Spring vessels, blocked by air", "Earlywood vessels (embolised)", "Earlywood vessels (freeze–thaw embolism)"]
+      : ["Big water tubes", "Spring wood: big vessels", "Earlywood vessels (ring-porous)", "Earlywood vessels (current-year conductance)"]);
+    if (prog > .4) m(R0 + (NR - 2) * RW + 16, -104, ["", "Summer wood", "Latewood fibres", "Latewood (thick-walled fibres)"], 1);
+    m(R0 + (NR - 3) * RW + 11, -70, ["One year of growth", "Annual growth ring", "Annual ring (earlywood + latewood)"]);
+    m(R0 + 2 * RW + 6, -99, ["", "", "Heartwood", "Heartwood with tylose-plugged vessels"], 2);
+    m(R0 + 4 * RW + 10, -88.9, ["", "", "Broad ray", "Multiseriate ray"], 2);
+    if (prog < 1) m(R0 + (NR - 1) * RW + RW * prog + 4, -78, ["", "", "New wood forming", "Differentiating xylem zone"], 2);
+    return b;
+  }
+});
+
+/* ---------- ROOTS ---------- */
+App.registerTopic({
+  id: "roots", glyph: "roots", zoom: 640,
+  illustrate(ctx){
+    const s = ctx.season, rng = ctx.rng;
+    const MX = 268, MY = 126, MR = 84, SY = 48;
+    let b = `<path d="M0 ${SY} L180 ${SY - 2} L180 220 L0 220Z" fill="#9b8263"/><path d="M0 ${SY} L180 ${SY - 2} L180 ${SY + 8} L0 ${SY + 10}Z" fill="#6b5640"/>`;
+    if (s === "winter") b += `<path d="M0 ${SY + 10} L180 ${SY + 8} L180 ${SY + 30} L0 ${SY + 32}Z" fill="#c9d6dc" opacity=".55"/><path d="M0 ${SY - 1} C40 ${SY - 12} 120 ${SY - 10} 180 ${SY - 6} L180 ${SY} L0 ${SY + 2}Z" fill="#f7faf9"/>`;
+    const tips = [];
+    (function br(x, y, a, len, w, d){
+      const x2 = x + Math.cos(a) * len, y2 = y + Math.sin(a) * len;
+      b += `<path d="M${f1(x)} ${f1(y)} Q${f1(x + Math.cos(a + .3) * len * .5)} ${f1(y + Math.sin(a + .3) * len * .5)} ${f1(x2)} ${f1(y2)}" stroke="#5f4635" stroke-width="${f1(w)}" fill="none" stroke-linecap="round"/>`;
+      if (d >= 4 || x2 > 170){ tips.push([x2, y2, a]); return; }
+      br(x2, y2, a - .5 + rng() * .2, len * .74, w * .62, d + 1);
+      br(x2, y2, a + .45 + rng() * .2, len * .74, w * .62, d + 1);
+    })(20, SY + 6, .9, 52, 9, 0);
+    const hyN = s === "summer" ? 7 : s === "winter" ? 3 : 5;
+    tips.forEach(([x, y, a], i) => {
+      const fresh = s === "spring" && i % 2 === 0;
+      b += `<ellipse cx="${f1(x)}" cy="${f1(y)}" rx="4.2" ry="2.8" transform="rotate(${f1(a * 180 / Math.PI)} ${f1(x)} ${f1(y)})" fill="${fresh ? "#fbf7ea" : "#e6d6b0"}" stroke="#bfa36a" stroke-width=".6"/>`;
+      for (let k = 0; k < hyN; k++){ const ha = a + (rng() - .5) * 3, L = 10 + rng() * 14; b += `<path d="M${f1(x)} ${f1(y)} q${f1(Math.cos(ha + .5) * L * .5)} ${f1(Math.sin(ha + .5) * L * .5)} ${f1(Math.cos(ha) * L)} ${f1(Math.sin(ha) * L)}" stroke="#fbf8ef" stroke-width=".7" fill="none" opacity=".9"/>`; }
+    });
+    if (s === "autumn"){
+      [[64, 1], [120, .75]].forEach(([x, k]) => { b += `<g transform="translate(${x} ${SY}) scale(${k})"><rect x="-4" y="-22" width="8" height="22" rx="3" fill="#efe5d0"/><path d="M-20 -20 Q0 -46 20 -20 Q0 -16 -20 -20Z" fill="#8b5a2b"/></g>`; });
+    }
+    const [tx, ty] = tips[Math.min(tips.length - 1, 5)];
+    b += loupe(f1(tx), f1(ty), MX, MY, MR);
+    let x = `<rect x="150" y="0" width="240" height="250" fill="#a58c6a"/>`;
+    for (let i = 0; i < 26; i++){ const a = rng() * Math.PI * 2; x += `<path d="M${f1(MX + Math.cos(a) * 66)} ${f1(MY + Math.sin(a) * 66)} q${f1(Math.cos(a + .6) * 8)} ${f1(Math.sin(a + .6) * 8)} ${f1(Math.cos(a) * 22)} ${f1(Math.sin(a) * 22)}" stroke="#fbf8ef" stroke-width=".9" fill="none"/>`; }
+    x += `<circle cx="${MX}" cy="${MY}" r="66" fill="#efe4c8"/>`;
+    for (let i = 0; i < 40; i++){ const a = rng() * Math.PI * 2, r = 57 + rng() * 8; x += `<path d="M${f1(MX + Math.cos(a) * r)} ${f1(MY + Math.sin(a) * r)} a3 3 0 0 1 4 2" stroke="#c9ad6d" stroke-width=".7" fill="none"/>`; }
+    const hn = ctx.ph.accent;
+    [[46, 16, 7.4], [32, 11, 7]].forEach(([r, n, cr]) => {
+      for (let i = 0; i < n; i++){ const a = i / n * Math.PI * 2 + r; x += `<circle cx="${f1(MX + Math.cos(a) * r)}" cy="${f1(MY + Math.sin(a) * r)}" r="${cr}" fill="#f7f0e2" stroke="${s === "winter" ? "#b9a77a" : "#c49a3e"}" stroke-width="${s === "summer" ? 2.2 : 1.6}"/>`; }
+    });
+    x += `<circle cx="${MX}" cy="${MY}" r="21" fill="#e6d7ad" stroke="#a8915a" stroke-width="1.2"/>`;
+    [0, 1, 2, 3].forEach(i => { const a = i * Math.PI / 2 + .4; x += `<circle cx="${f1(MX + Math.cos(a) * 10)}" cy="${f1(MY + Math.sin(a) * 10)}" r="3.2" fill="#6f5a3a"/><circle cx="${f1(MX + Math.cos(a + .78) * 11)}" cy="${f1(MY + Math.sin(a + .78) * 11)}" r="2" fill="#b4925a"/>`; });
+    b += magnifier(MX, MY, MR, x);
+    ctx.mark(46, 74, ["Root", "Woody root", "Coarse root (starch store)"]);
+    ctx.mark(f1(tx + 16), f1(ty - 14), ["Fungal threads", "Fungal hyphae", "Extramatrical mycelium"]);
+    ctx.mark(f1(tx - 18), f1(ty + 2), ["", "Mycorrhizal root tip", "Ectomycorrhizal root tip"], 1);
+    if (s === "autumn") ctx.mark(64, SY - 36, ["Mushroom", "Mushroom (fungal fruit)", "EM sporocarp (bolete)"]);
+    if (s === "winter") ctx.mark(150, SY + 20, ["Frozen topsoil", "Frozen topsoil, under snow"]);
+    if (s === "spring") ctx.mark(tips[0][0] + 8, tips[0][1] + 8, ["New white root tip", "New root tip"]);
+    ctx.mark(MX + 50, MY - 46, ["", "Fungal sheath", "Fungal mantle", "Hyphal mantle"], 1);
+    ctx.mark(MX + 34, MY + 30, ["", "", "Hartig net between cortex cells", "Hartig net (exchange interface)"], 2);
+    ctx.mark(MX - 36, MY + 34, ["", "", "Root cortex", "Cortex (angiosperm Hartig net is mostly epidermal)"], 2);
+    ctx.mark(MX, MY, ["", "", "", "Stele (tetrarch xylem)"], 3);
+    return b;
+  }
+});
+
+/* glyphs for the topic list */
+const GLYPHS = {
+  leaf: `<g transform="translate(10 18.5) rotate(-35) scale(.95)">${"<path d='" + oakLeafPath(16, 5.5) + "' fill='var(--accent)'/>"}</g>`,
+  bud: `<g transform="translate(10 17)">${budShape(13, "var(--ink)", "var(--surface-2)")}</g>`,
+  catkin: `<path d="M5 3 Q10 3 15 4" stroke="var(--ink)" stroke-width="1.4" fill="none"/>${beads(8, 4, -1, 13, "var(--ink)", 6).replace(/r="[\d.]+"/g, 'r="1.5"')}${beads(12, 4, 1, 11, "var(--ink)", 5).replace(/r="[\d.]+"/g, 'r="1.5"')}`,
+  acorn: `<g transform="translate(10 3.5)">${acornShape(11, 1).replace(/fill="#[0-9a-f]{6}"/g, 'fill="var(--ink)"').replace(/fill="#fff"/g, 'fill="var(--surface-2)"')}</g>`,
+  rings: `<circle cx="10" cy="10" r="8.5" fill="none" stroke="var(--ink)" stroke-width="1.4"/><circle cx="10" cy="10" r="5.5" fill="none" stroke="var(--ink)" stroke-width="1"/><circle cx="10" cy="10" r="2.5" fill="var(--ink)"/>`,
+  roots: `<path d="M3 5 H17 M10 5 V10 M10 10 Q6 13 4 17 M10 10 Q14 13 16 17 M10 10 V17" stroke="var(--ink)" stroke-width="1.4" fill="none" stroke-linecap="round"/>`
+};
+
+/* =========================================================================
+   HOTSPOTS — HTML overlay mapped from world coordinates
+   ========================================================================= */
+const Hotspots = (() => {
+  const layer = $("#hotspots"), svg = $("#scene");
+  const btns = new Map();
+  function build(){
+    layer.innerHTML = "";
+    Topics.forEach((t, id) => {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "hs";
+      const name = CONTENT.topics[id].name;
+      b.setAttribute("aria-label", `Look closer: ${name}`);
+      b.innerHTML = `<span class="hs-dot"></span><span class="hs-label">${esc(name)}</span>`;
+      b.addEventListener("click", () => store.set({ topic: id }));
+      layer.appendChild(b); btns.set(id, b);
+    });
+  }
+  function place(){
+    const m = svg.getScreenCTM(); if (!m) return;
+    const r = layer.getBoundingClientRect(), pt = svg.createSVGPoint();
+    btns.forEach((b, id) => {
+      const p = Scene.focusPoints[id]; pt.x = p.x; pt.y = p.y;
+      const s = pt.matrixTransform(m);
+      const x = s.x - r.left, y = s.y - r.top;
+      b.style.left = x + "px"; b.style.top = y + "px";
+      b.classList.toggle("flip", x > r.width * .62);
+    });
+  }
+  return { build, place, setVisible(v){ layer.classList.toggle("off", !v); } };
+})();
+
+/* =========================================================================
+   GLOSSARY — auto-link terms, one tooltip
+   ========================================================================= */
+const Glossary = (() => {
+  const index = [];
+  for (const term in GLOSSARY) GLOSSARY[term].match.forEach(m => index.push([m, term]));
+  index.sort((a, b) => b[0].length - a[0].length);
+  const lookup = new Map(index.map(([m, t]) => [m.toLowerCase(), t]));
+  const re = new RegExp(`\\b(${index.map(([m]) => m.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&")).join("|")})\\b`, "gi");
+  const tip = $("#tip");
+  function linkify(text){
+    const used = new Set();
+    return esc(text).replace(re, (w) => {
+      const t = lookup.get(w.toLowerCase());
+      if (!t || used.has(t)) return w;
+      used.add(t);
+      return `<button type="button" class="term" data-term="${esc(t)}">${w}</button>`;
+    });
+  }
+  function show(btn){
+    const t = btn.dataset.term, g = GLOSSARY[t]; if (!g) return;
+    tip.innerHTML = `<b>${esc(t.charAt(0).toUpperCase() + t.slice(1))}</b>${esc(g.def)}`;
+    tip.classList.add("on");
+    const r = btn.getBoundingClientRect(), tw = tip.offsetWidth, th = tip.offsetHeight;
+    let x = r.left + r.width / 2 - tw / 2; x = clamp(x, 8, window.innerWidth - tw - 8);
+    let y = r.bottom + 8; if (y + th > window.innerHeight - 8) y = r.top - th - 8;
+    tip.style.left = x + "px"; tip.style.top = y + "px";
+  }
+  function hide(){ tip.classList.remove("on"); }
+  document.addEventListener("mouseover", e => { const b = e.target.closest(".term"); if (b) show(b); });
+  document.addEventListener("mouseout", e => { if (e.target.closest(".term")) hide(); });
+  document.addEventListener("focusin", e => { const b = e.target.closest(".term"); if (b) show(b); });
+  document.addEventListener("focusout", e => { if (e.target.closest(".term")) hide(); });
+  document.addEventListener("click", e => { const b = e.target.closest(".term"); if (b) show(b); else hide(); });
+  $("#panel").addEventListener("scroll", hide, { passive: true });
+  return { linkify, hide };
+})();
+
+/* =========================================================================
+   PANEL — intro view and topic view
+   ========================================================================= */
+const Panel = (() => {
+  const root = $("#panelInner");
+  let lastKey = "";
+  function textFor(topicId, season, level){
+    const seasons = CONTENT.topics[topicId]?.seasons?.[season];
+    if (!seasons) return null;
+    for (let i = LEVEL_INDEX[level]; i >= 0; i--){ const t = seasons[LEVELS[i].id]; if (t) return t; }
+    return null;
+  }
+  function pips(li){ return `<span class="pips" aria-hidden="true">${LEVELS.map((_, i) => `<i class="${i <= li ? "on" : ""}"></i>`).join("")}</span>`; }
+
+  function renderIntro(s){
+    const items = [...Topics.keys()].map(id => {
+      const t = CONTENT.topics[id], g = GLYPHS[Topics.get(id).glyph] || "";
+      return `<li><button type="button" data-topic="${id}"><span class="tl-glyph"><svg viewBox="0 0 20 20" aria-hidden="true">${g}</svg></span><span class="tl-name">${esc(t.name)}</span><span class="tl-blurb">${esc(t.blurb)}</span><span class="tl-arrow" aria-hidden="true">›</span></button></li>`;
+    }).join("");
+    root.className = "panel-inner intro enter";
+    root.innerHTML = `
+      <h2>${esc(STRINGS.introTitle)}</h2>
+      <p class="lede">${esc(STRINGS.introLede)}</p>
+      <p class="follow-label">${esc(STRINGS.explore)}</p>
+      <ul class="topic-list">${items}</ul>
+      <p class="hint">${esc(STRINGS.hint)}</p>`;
+    root.querySelectorAll("[data-topic]").forEach(b => b.addEventListener("click", () => store.set({ topic: b.dataset.topic })));
+  }
+
+  function renderTopic(s){
+    const id = s.topic, topic = Topics.get(id), data = CONTENT.topics[id];
+    const season = seasonOf(s.month), li = LEVEL_INDEX[s.level], mi = Math.floor(s.month) % 12;
+    const ctx = makeCtx(s);
+    const svgBody = topic.illustrate(ctx) + ctx.marks;
+    const legend = ctx.labels.map(l => `<li>${esc(l)}</li>`).join("");
+    const text = textFor(id, season, s.level);
+    const tabs = SEASONS.map(se => `<button type="button" data-season="${se.id}" aria-pressed="${se.id === season}">${se.label}</button>`).join("");
+    const deeper = li < LEVELS.length - 1 ? `<button type="button" class="chip primary" data-level="${LEVELS[li + 1].id}">${esc(STRINGS.deeper(LEVELS[li + 1].label))}</button>` : "";
+    const simpler = li > 0 ? `<button type="button" class="chip" data-level="${LEVELS[li - 1].id}">${esc(STRINGS.simpler(LEVELS[li - 1].label))}</button>` : "";
+    const related = (data.related || []).filter(r => Topics.has(r)).map(r => `<button type="button" class="chip" data-topic="${r}">${esc(CONTENT.topics[r].name)}</button>`).join("");
+    root.className = "panel-inner enter";
+    root.innerHTML = `
+      <div class="crumb">
+        <button type="button" class="link" data-home>
+          <svg width="12" height="12" viewBox="0 0 14 14" aria-hidden="true"><path d="M9 2 4 7l5 5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>${esc(STRINGS.wholeTree)}
+        </button>
+        <span class="when">${MONTHS[mi]}, ${SEASONS.find(x => x.id === season).label.toLowerCase()}</span>
+      </div>
+      <h2>${esc(data.name)}</h2>
+      <p class="lede">${esc(data.blurb)}</p>
+      <figure class="ill">
+        <svg ${VB} role="img" aria-label="${esc(data.name)} in ${season}: ${esc(ctx.labels.join(", "))}">${svgBody}</svg>
+        ${legend ? `<ol class="legend">${legend}</ol>` : ""}
+      </figure>
+      <div class="follow">
+        <p class="follow-label">${esc(STRINGS.follow)}</p>
+        <div class="tabs">${tabs}</div>
+      </div>
+      <div class="reading">
+        <p class="reading-level">${pips(li)}${esc(LEVELS[li].label)}</p>
+        <p class="text">${text ? Glossary.linkify(text) : esc(STRINGS.missing)}</p>
+        <div class="depth">${deeper}${simpler}</div>
+      </div>
+      ${related ? `<div class="related"><p>${esc(STRINGS.seeAlso)}</p><div class="depth">${related}</div></div>` : ""}`;
+    root.querySelector("[data-home]").addEventListener("click", () => store.set({ topic: null }));
+    root.querySelectorAll("[data-season]").forEach(b => b.addEventListener("click", () => {
+      store.set({ month: SEASONS.find(x => x.id === b.dataset.season).rep, playing: false });
+    }));
+    root.querySelectorAll("[data-level]").forEach(b => b.addEventListener("click", () => store.set({ level: b.dataset.level })));
+    root.querySelectorAll(".related [data-topic]").forEach(b => b.addEventListener("click", () => store.set({ topic: b.dataset.topic })));
+  }
+
+  function render(s, force){
+    const mi = Math.floor(s.month) % 12;
+    const key = `${s.topic}|${s.level}|${s.topic ? mi : ""}`;
+    if (key === lastKey && !force) return;
+    const animate = key.split("|")[0] !== lastKey.split("|")[0];
+    lastKey = key;
+    Glossary.hide();
+    s.topic ? renderTopic(s) : renderIntro(s);
+    if (!animate) root.classList.remove("enter");
+    if (animate) $("#panel").scrollTop = 0;
+  }
+  return { render };
+})();
+
+/* =========================================================================
+   CONTROLS — level switch, timeline, play
+   ========================================================================= */
+const Controls = (() => {
+  const seg = $("#levelSeg"), range = $("#monthRange"), monthBtns = $("#monthBtns"), play = $("#playBtn"), back = $("#backBtn");
+  const icons = { play: `<svg viewBox="0 0 14 14" aria-hidden="true"><path d="M3 1.5v11l9.5-5.5z"/></svg>`, pause: `<svg viewBox="0 0 14 14" aria-hidden="true"><rect x="2.5" y="1.5" width="3.2" height="11" rx="1"/><rect x="8.3" y="1.5" width="3.2" height="11" rx="1"/></svg>` };
+  function build(){
+    seg.innerHTML = LEVELS.map(l => `<button type="button" role="radio" data-level="${l.id}"><span class="long">${l.label}</span><span class="short">${l.short}</span></button>`).join("");
+    seg.addEventListener("click", e => { const b = e.target.closest("[data-level]"); if (b) store.set({ level: b.dataset.level }); });
+    seg.addEventListener("keydown", e => {
+      if (!["ArrowLeft", "ArrowRight"].includes(e.key)) return;
+      const i = LEVEL_INDEX[store.get().level] + (e.key === "ArrowRight" ? 1 : -1);
+      if (i >= 0 && i < LEVELS.length){ store.set({ level: LEVELS[i].id }); seg.querySelector(`[data-level="${LEVELS[i].id}"]`).focus(); }
+      e.preventDefault();
+    });
+    monthBtns.innerHTML = MONTHS.map((m, i) => `<button type="button" data-m="${i}" aria-label="${m}">${m[0]}</button>`).join("");
+    monthBtns.addEventListener("click", e => { const b = e.target.closest("[data-m]"); if (b) store.set({ month: +b.dataset.m + .5, playing: false }); });
+    range.addEventListener("input", () => store.set({ month: +range.value, playing: false }));
+    play.addEventListener("click", () => store.set({ playing: !store.get().playing }));
+    back.addEventListener("click", () => store.set({ topic: null }));
+    document.addEventListener("keydown", e => { if (e.key === "Escape" && store.get().topic) store.set({ topic: null }); });
+  }
+  function sync(s){
+    seg.querySelectorAll("[data-level]").forEach(b => { const on = b.dataset.level === s.level; b.setAttribute("aria-checked", on); b.tabIndex = on ? 0 : -1; });
+    if (document.activeElement !== range) range.value = s.month.toFixed(2);
+    const mi = Math.floor(s.month) % 12;
+    monthBtns.querySelectorAll("[data-m]").forEach((b, i) => b.setAttribute("aria-current", i === mi));
+    play.innerHTML = s.playing ? icons.pause : icons.play;
+    play.setAttribute("aria-label", s.playing ? "Pause" : "Play the year");
+    range.setAttribute("aria-valuetext", MONTHS[mi]);
+    back.classList.toggle("on", !!s.topic);
+    $(".moment").classList.toggle("off", !!s.topic);
+    $("#mMonth").textContent = MONTHS[mi];
+    $("#mSeason").textContent = SEASONS.find(x => x.id === seasonOf(s.month)).label;
+    $("#mNote").textContent = MONTH_NOTES[mi];
+  }
+  return { build, sync };
+})();
+
+/* =========================================================================
+   WIRING
+   ========================================================================= */
+function cameraFor(s){
+  if (!s.topic) return Camera.homeView();
+  const t = Topics.get(s.topic), p = Scene.focusPoints[s.topic], k = t.pull || 0;
+  /* pull the view slightly toward the crown so the focus sits in context */
+  const c = { x: CONFIG.world.cx, y: 330 };
+  return Camera.focusView({ x: lerp(p.x, c.x, k), y: lerp(p.y, c.y, k) }, t.zoom || 400);
+}
+
+store.subscribe((s, prev) => {
+  if (s.month !== prev.month) Scene.update(s.month);
+  if (s.level !== prev.level) storage.set("oakyear.level", s.level);
+  if (s.topic !== prev.topic){
+    Camera.go(cameraFor(s)); Hotspots.setVisible(!s.topic); Scene.focus(s.topic);
+    if (s.topic && !prev.topic && window.matchMedia("(max-width: 860px)").matches){
+      setTimeout(() => {
+        const r = $("#panel").getBoundingClientRect();
+        if (r.top > window.innerHeight * .7) window.scrollTo({ top: window.scrollY + r.top - window.innerHeight * .38, behavior: reducedMotion ? "auto" : "smooth" });
+      }, reducedMotion ? 0 : 900);
+    }
+  }
+  Controls.sync(s);
+  Panel.render(s);
+});
+
+function init(){
+  Scene.build();
+  Hotspots.build();
+  Controls.build();
+  const s = store.get();
+  Scene.update(s.month);
+  Controls.sync(s);
+  Panel.render(s, true);
+  $("#brandLeaf").setAttribute("d", oakLeafPath(26, 8.5));
+  $("#brandLeaf").setAttribute("transform", "translate(13 31) rotate(28)");
+  requestAnimationFrame(() => { Camera.go(cameraFor(s), true); Hotspots.place(); });
+
+  let resizeT;
+  new ResizeObserver(() => { clearTimeout(resizeT); resizeT = setTimeout(() => { Camera.go(cameraFor(store.get()), true); }, 60); }).observe($("#sceneWrap"));
+
+  let last = performance.now();
+  function frame(t){
+    const dt = Math.min(.05, (t - last) / 1000); last = t;
+    const st = store.get();
+    if (st.playing) store.set({ month: (st.month + dt * CONFIG.monthsPerSecond) % 12 });
+    if (Camera.tick(t)) Hotspots.place();
+    if (!document.hidden) Particles.tick(dt);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+}
+init();
+})();
+</script>
+</body>
+</html>
